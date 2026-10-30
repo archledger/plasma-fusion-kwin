@@ -26,14 +26,17 @@ user to patched KWin. See [POLICY.md](POLICY.md) for the installation and mainte
 
 ## Current status
 
-This is the documentation foundation for the downstream patch set. It does **not** currently
-provide patches, packages, releases, a package repository or an installer. Nothing here changes
-the installed desktop.
+This repository carries one pinned opacity patch and fast source/patch validation. It does
+**not** provide packages, releases, a package repository or an installer. Nothing here changes
+the installed desktop. The native build/test lane is not yet qualified.
 
-The existing investigation and upstream submissions remain separate from a downstream release.
-In particular, [KWin !10275](https://invent.kde.org/plasma/kwin/-/merge_requests/10275) addresses
-offscreen-view opacity. A submitted or locally tested patch is not automatically a supported
-package, and its presence here must not be inferred from that link.
+The first historical source candidate is KWin `v6.7.5`, pinned in `patchset.json` with the patch's
+digest, provenance and expected result tree. See [validation details](docs/VALIDATION.md) and the
+[approved scope](SPEC.md). This is not a claim of current distribution support.
+
+[KWin !10275](https://invent.kde.org/plasma/kwin/-/merge_requests/10275) tracks the related upstream
+submission. A submitted or locally tested patch is not automatically a supported downstream
+package, and upstream merge status is not assumed.
 
 ## Maintenance model
 
@@ -52,6 +55,6 @@ Read [CONTRIBUTING.md](CONTRIBUTING.md) before proposing the first patch or buil
 
 ## License
 
-The documentation in this initial repository is licensed under
-[CC-BY-SA-4.0](LICENSE). Any KWin source or patches imported later must retain their applicable
-upstream licenses and copyright notices; the documentation license does not relicense that code.
+Documentation is licensed under [CC-BY-SA-4.0](LICENSE). Validator code and the imported patch are
+GPL-2.0-or-later; manifest data is CC0-1.0. See `LICENSES/` and the SPDX notices. The documentation
+license does not relicense KWin code or replace its copyright notices.

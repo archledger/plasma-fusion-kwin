@@ -1,0 +1,93 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Fast patch-set validation
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  fast-checks:
+    name: Source checks (not native qualification)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      PYTHONDONTWRITEBYTECODE: "1"
+      REUSE_IMAGE: docker.io/fsfe/reuse@sha256:85462a75c0f8efda09ddd190b92816b70e7662577c8427429e11e1b9f25a992e
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Unit and real-Git regression tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/patchset-evidence"
+          python3 --version
+          git --version
+          python3 -m unittest discover -s tests -v 2>&1 |
+            tee "$RUNNER_TEMP/patchset-evidence/unit.log"
+
+      - name: Verify pinned public source and complete patch application
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 tools/patchset.py check 2> "$RUNNER_TEMP/patchset-evidence/patchset-error.log" |
+            tee "$RUNNER_TEMP/patchset-evidence/patchset.json"
+
+      - name: Check the event's complete change range
+        shell: bash
+        env:
+          BASE_COMMIT: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          [[ "$BASE_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$HEAD_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          for commit in "$BASE_COMMIT" "$HEAD_COMMIT"; do
+            if [[ "$commit" != 0000000000000000000000000000000000000000 ]]; then
+              if ! git cat-file -e "$commit^{commit}" 2>/dev/null; then
+                git fetch --no-tags --depth=1 origin "$commit"
+              fi
+              git cat-file -e "$commit^{commit}"
+            fi
+          done
+          if [[ "$BASE_COMMIT" == 0000000000000000000000000000000000000000 ]]; then
+            BASE_COMMIT=$(git hash-object -t tree -w --stdin < /dev/null)
+          fi
+          # Unified-diff context markers contain required trailing spaces. The
+          # application check rejects whitespace errors in their added source lines.
+          git diff --check "$BASE_COMMIT" "$HEAD_COMMIT" -- . ':(exclude)patches/*.patch' 2>&1 |
+            tee "$RUNNER_TEMP/patchset-evidence/whitespace.log"
+
+      - name: License check without a host bind mount
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=$(docker create --network none --cap-drop ALL \
+            --security-opt no-new-privileges "$REUSE_IMAGE" lint)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          git archive --format=tar HEAD | docker cp - "$container:/data"
+          docker start --attach "$container" 2>&1 |
+            tee "$RUNNER_TEMP/patchset-evidence/reuse.log"
+          status=$(docker wait "$container")
+          [[ "$status" == 0 ]]
+
+      - name: Retain validation logs only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: fast-patchset-validation
+          path: |
+            ${{ runner.temp }}/patchset-evidence/unit.log
+            ${{ runner.temp }}/patchset-evidence/patchset.json
+            ${{ runner.temp }}/patchset-evidence/patchset-error.log
+            ${{ runner.temp }}/patchset-evidence/whitespace.log
+            ${{ runner.temp }}/patchset-evidence/reuse.log
+          if-no-files-found: error
+          retention-days: 14
