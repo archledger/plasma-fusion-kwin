@@ -1,9 +1,14 @@
 # SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
 import copy
+import hashlib
 import json
+import os
 import subprocess
+import tarfile
 import tempfile
+import textwrap
+import time
 import types
 import unittest
 from pathlib import Path
@@ -30,7 +35,7 @@ class NativeRunnerTest(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 run_native_guest.verify_controller(value | {key: changed}, 'render', 'a' * 64)
 
-    def simulate(self, failure=None, mode='render'):
+    def simulate(self, failure=None, mode='render', **identity):
         token = 'd' * 32
         name, volume = 'pf-native-' + token, 'pf-native-data-' + token
         info = {
@@ -88,7 +93,14 @@ class NativeRunnerTest(unittest.TestCase):
                 if failure == 'partial':
                     kwargs['stdout'].write('{"partial":')
                     return subprocess.CompletedProcess(command, 1, '', 'partial failure')
-                kwargs['stdout'].write(json.dumps(self.controller() | {'mode': mode}))
+                value = self.controller() | {'mode': mode, 'nonce': identity.get('nonce', token)}
+                if identity.get('qualification_id'):
+                    value['qualification_id'] = identity['qualification_id']
+                if failure == 'wrong-nonce':
+                    value['nonce'] = 'f' * 32
+                if failure == 'wrong-qid':
+                    value['qualification_id'] = 'f' * 64
+                kwargs['stdout'].write(json.dumps(value))
                 state['container'] = False
             elif args[0] == 'rm':
                 state['container'] = False
@@ -102,23 +114,109 @@ class NativeRunnerTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, code, out, err)
 
         snapshot = {'uid': 0, 'gid': 993, 'mode': 0o660, 'major': 10, 'minor': 232}
+        def pack(*args, **kwargs):
+            state['invocation'] = kwargs.get('invocation')
+            return {'source': {}}, [], 'a' * 64
+
         with tempfile.TemporaryDirectory() as directory, \
                 patch.object(run_native_guest.uuid, 'uuid4', return_value=types.SimpleNamespace(hex=token)), \
                 patch.object(run_native_guest.time, 'monotonic', side_effect=lambda: state['clock']), \
                 patch.object(run_native_guest, 'device_snapshot', return_value=snapshot), \
-                patch.object(run_native_guest, 'pack_inputs', return_value=({'source': {}}, [], 'a' * 64)), \
+                patch.object(run_native_guest, 'pack_inputs', side_effect=pack), \
                 patch.object(run_native_guest, 'decode', return_value={'files': {'build.log': 'ok'}, 'metadata': {}}), \
                 patch.object(run_native_guest, 'verify_envelope', return_value={'mode': 'render'}), \
                 patch.object(run_native_guest.shutil, 'disk_usage', return_value=types.SimpleNamespace(free=20*1024**3)), \
                 patch.object(run_native_guest.subprocess, 'run', side_effect=engine):
             report = run_native_guest.run_guest(Path(directory), Path(directory), Path(directory)/'base',
-                                                 Path(directory), mode, 900 if mode == 'render' else 4200)
+                                                 Path(directory), mode, 900 if mode == 'render' else 4200, **identity)
         return copy.deepcopy(report), state
 
     def test_success_requires_owned_cleanup(self):
         report, state = self.simulate()
         self.assertTrue(report['success'])
         self.assertFalse(state['container'] or state['volume'])
+
+    def test_admission_identity_is_packed_and_verified(self):
+        identity = {'qualification_id': 'b' * 64, 'nonce': 'e' * 32,
+                    'expected_input_manifest': 'a' * 64}
+        report, state = self.simulate(**identity)
+        self.assertTrue(report['success'])
+        self.assertEqual(state['invocation'], {'nonce': 'e' * 32, 'qualification_id': 'b' * 64})
+        self.assertEqual(report['qualification_id'], identity['qualification_id'])
+        for failure in ['wrong-nonce', 'wrong-qid']:
+            with self.subTest(failure=failure):
+                report, state = self.simulate(failure, **identity)
+                self.assertFalse(report['success'])
+                self.assertTrue(report['cleanup_confirmed'])
+
+    def test_wrong_input_manifest_refuses_before_container_creation(self):
+        report, state = self.simulate(qualification_id='b' * 64, nonce='e' * 32,
+                                      expected_input_manifest='c' * 64)
+        self.assertFalse(report['success'])
+        self.assertFalse(any(command[0] in {'create', 'start'} for command in state['commands']))
+
+    def test_partial_admission_never_reaches_device_or_engine(self):
+        with tempfile.TemporaryDirectory() as directory, patch.object(run_native_guest, 'device_snapshot') as device:
+            for identity in [{'nonce': 'e' * 32}, {'qualification_id': 'b' * 64},
+                             {'qualification_id': 'b' * 64, 'nonce': 'bad', 'expected_input_manifest': 'a' * 64}]:
+                with self.subTest(identity=identity), self.assertRaises(ValueError):
+                    run_native_guest.run_guest(Path(directory), Path(directory), Path(directory)/'base',
+                                               Path(directory), 'native', 4200, **identity)
+            device.assert_not_called()
+
+    def test_invocation_is_covered_by_the_input_checksum_manifest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'ci/builder').mkdir(parents=True)
+            (root / 'ci/builder/packages.lock').write_text('fixture-package\n')
+            source = b'fixture source'
+            inputs = {'source': {'tree': 'a' * 40, 'sha256': hashlib.sha256(source).hexdigest(),
+                                 'bytes': len(source)}, 'builder': {'files': []}}
+            (root / 'inputs.json').write_text(json.dumps(inputs))
+            (root / 'patched-source.tar').write_bytes(source)
+            invocation = {'nonce': 'b' * 32, 'qualification_id': 'c' * 64}
+
+            def stage(base, archive):
+                with tarfile.open(fileobj=archive, mode='w'):
+                    pass
+                archive.seek(0)
+
+            with tempfile.TemporaryFile() as archive, \
+                    patch.object(run_native_guest, 'load_manifest', return_value=types.SimpleNamespace(expected_tree='a' * 40)), \
+                    patch.object(run_native_guest, 'verify_image_directory', return_value={'files': []}), \
+                    patch.object(run_native_guest, 'stage_image', side_effect=stage), \
+                    patch.object(run_native_guest, 'PAYLOAD', ()):
+                run_native_guest.pack_inputs(root, root, root/'base', archive, invocation=invocation)
+                with tarfile.open(fileobj=archive, mode='r') as packed:
+                    data = packed.extractfile('native-input/invocation.json').read()
+                    self.assertEqual(json.loads(data), invocation)
+                    sums = packed.extractfile('native-input/SHA256SUMS').read().decode()
+                    self.assertIn(hashlib.sha256(data).hexdigest() + '  invocation.json\n', sums)
+
+    def test_native_action_forwards_complete_admission_and_rejects_partial_input(self):
+        action = Path(__file__).resolve().parents[1] / '.github/actions/native-guest/action.yml'
+        script = textwrap.dedent(action.read_text().split('      run: |\n', 1)[1].split('\n    - name:', 1)[0])
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'bin').mkdir()
+            (root / 'bin/python3').write_text('#!/bin/sh\nprintf "%s\\n" "$@" >> "$CALLS"\n')
+            (root / 'bin/curl').write_text('#!/bin/sh\nexit 0\n')
+            for name in ['python3', 'curl']:
+                (root / 'bin' / name).chmod(0o700)
+            calls = root / 'calls'
+            env = dict(os.environ, PATH=str(root/'bin') + ':' + os.environ['PATH'], CALLS=str(calls),
+                       RUNNER_TEMP=str(root), GITHUB_OUTPUT=str(root/'outputs'), NATIVE_MODE='native',
+                       NATIVE_BUDGET='4200', NATIVE_JOB_STARTED=str(int(time.time())),
+                       QUALIFICATION_ID='b'*64, NATIVE_NONCE='c'*32, INPUT_MANIFEST_SHA256='d'*64)
+            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, timeout=10, check=False)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            arguments = calls.read_text().splitlines()
+            for flag, value in [('--qualification-id', 'b'*64), ('--nonce', 'c'*32),
+                                ('--expected-input-manifest', 'd'*64)]:
+                self.assertEqual(arguments[arguments.index(flag) + 1], value)
+            calls.unlink()
+            env['NATIVE_NONCE'] = ''
+            result = subprocess.run(['bash', '-c', script], env=env, capture_output=True, timeout=10, check=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse(calls.exists())
 
     def test_runtime_evidence_omits_environment_and_unrelated_settings(self):
         info = {

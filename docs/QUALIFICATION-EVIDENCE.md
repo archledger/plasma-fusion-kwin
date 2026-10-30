@@ -128,3 +128,31 @@ binding are historical evidence, not interchangeable version-1 proofs.
 
 Tests use synthetic API records and native reports with real parsers. They do
 not claim a new guest execution, real admission issuance or GitHub merge test.
+
+## Native-stage assembly
+
+The existing `.github/actions/native-guest` action accepts the three admission
+inputs together: `qualification-id`, `native-nonce` and
+`input-manifest-sha256`. The producer must supply them from its trusted admission,
+not guest output. The runner packs the invocation into the checksum-covered
+input medium, the controller uses that nonce rather than generating another,
+and the runner refuses a different input manifest or returned invocation.
+
+Calls without all three inputs are either rejected (partial input) or remain
+the legacy standalone qualification mode (all absent). Standalone mode does not
+produce a version-1 PR qualification merely because its tests pass. The outer
+container/VM boundary and cleanup requirements are unchanged.
+
+This connects the native execution component; it does not complete the trusted
+four-job producer. Assembly should reuse these existing pieces:
+
+| Job | Existing implementation to reuse | Remaining integration |
+| --- | --- | --- |
+| `prepare` | Candidate binding and `tools/native_inputs.py` | Authenticated candidate collection and isolated preparation for that exact admission. |
+| `admit` | Admission schema and signed coordination reader | Trusted issuance of the nonce/QID/manifest binding and the independent in-progress App check. |
+| `native` | Authenticated claim, one-shot guard and `native-guest` action | Connect the accepted running claim to the three action inputs; retain the resulting evidence. |
+| `report` | Native parsers, qualification and current-policy checks | Collect same-attempt evidence and perform only the authorized App result update. |
+
+Do not replace these missing joins with placeholder jobs or weaken the four-job,
+main-branch, signature, admission or cleanup checks to make a draft workflow pass.
+No production workflow, native run, App write or merge is enabled by this adapter.

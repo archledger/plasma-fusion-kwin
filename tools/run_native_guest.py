@@ -6,6 +6,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -16,7 +17,7 @@ import uuid
 from pathlib import Path, PurePosixPath
 
 from ci.hypervisor.boot_guest import GUEST_SHA256, read_bounded
-from ci.native.controller import native_command
+from ci.native.controller import native_command, validate_invocation
 from ci.native.transport import decode
 from ci.native.verify import verify_envelope
 from tools.native_inputs import regular_digest, verify_image_directory
@@ -92,7 +93,8 @@ def output_tail(path):
         return output.read(65536).decode(errors='replace')
 
 
-def pack_inputs(repo, prepared, base, archive):
+def pack_inputs(repo, prepared, base, archive, *, invocation):
+    validate_invocation(invocation)
     inputs = json.loads((prepared / 'inputs.json').read_text())
     manifest = load_manifest(repo)
     require(inputs['source']['tree'] == manifest.expected_tree, 'prepared source tree differs')
@@ -137,6 +139,7 @@ def pack_inputs(repo, prepared, base, archive):
             add('builder-image/' + name, source=prepared / 'builder-image' / name)
         for name in ['patched-source.tar', 'inputs.json']:
             add(name, source=prepared / name)
+        add('invocation.json', data=json.dumps(invocation, sort_keys=True, separators=(',', ':')).encode())
         add('builder-packages.txt', data=('\n'.join(packages) + '\n').encode())
         checksums = ''.join(sums).encode()
         add('SHA256SUMS', data=checksums)
@@ -144,12 +147,23 @@ def pack_inputs(repo, prepared, base, archive):
     return inputs, packages, hashlib.sha256(checksums).hexdigest()
 
 
-def run_guest(repo, prepared, base, output, mode, budget):
+def run_guest(repo, prepared, base, output, mode, budget, *, qualification_id=None,
+              nonce=None, expected_input_manifest=None):
     require(mode in {'render', 'native'} and 0 < budget <= 4200, 'invalid native execution budget')
+    bound = any(value is not None for value in [qualification_id, nonce, expected_input_manifest])
+    require(not bound or all(value is not None for value in [qualification_id, nonce, expected_input_manifest]),
+            'admission requires qualification ID, nonce and input manifest together')
+    if bound:
+        require(type(expected_input_manifest) is str and re.fullmatch(r'[0-9a-f]{64}', expected_input_manifest)
+                and expected_input_manifest != '0' * 64, 'invalid expected input manifest')
+    invocation = validate_invocation({'nonce': nonce if bound else uuid.uuid4().hex,
+                                      'qualification_id': qualification_id})
     reserve, allowance = (120, 3750) if mode == 'native' else (90, 750)
     deadline = time.monotonic() + budget
     report = {'success': False, 'mode': mode, 'image': IMAGE, 'image_id': CONFIG,
               'budget_seconds': budget, 'cleanup_reserve_seconds': reserve}
+    if bound:
+        report['qualification_id'] = qualification_id
     token = uuid.uuid4().hex
     name, volume = 'pf-native-' + token, 'pf-native-data-' + token
     volume_attempted = container_attempted = False
@@ -179,9 +193,10 @@ def run_guest(repo, prepared, base, output, mode, budget):
             report['engine_security_options'] = security
             require(shutil.disk_usage(output).free >= 12 * 1024**3, 'insufficient temporary storage')
             with tempfile.TemporaryFile(dir=temporary) as archive:
-                inputs, packages, manifest_sha = pack_inputs(repo, prepared, base, archive)
+                inputs, packages, manifest_sha = pack_inputs(repo, prepared, base, archive, invocation=invocation)
                 report['input_manifest_sha256'] = manifest_sha
                 report['source'] = inputs['source']
+                require(not bound or manifest_sha == expected_input_manifest, 'admitted input manifest differs')
                 checked(['pull', '--quiet', IMAGE], 180)
                 require(checked(['image', 'inspect', '--format={{.Id}}', IMAGE]).strip() == CONFIG,
                         'hypervisor image configuration differs')
@@ -219,6 +234,8 @@ def run_guest(repo, prepared, base, output, mode, budget):
             report['controller'] = json.loads(read_bounded(temporary / 'controller.json', 64 * 1024**2))
             controller = report['controller']
             require(controller.get('input_manifest_sha256') == manifest_sha, 'executed input manifest differs')
+            require(controller.get('nonce') == invocation['nonce']
+                    and controller.get('qualification_id') == qualification_id, 'executed invocation differs')
             if 'wire' in controller:
                 envelope = decode(controller['wire'], controller['nonce'])
                 artifacts = output / 'artifacts'
@@ -275,10 +292,14 @@ if __name__ == '__main__':
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--mode', choices=['render', 'native'], required=True)
     parser.add_argument('--budget', type=int, required=True)
+    parser.add_argument('--qualification-id')
+    parser.add_argument('--nonce')
+    parser.add_argument('--expected-input-manifest')
     args = parser.parse_args()
     args.output.mkdir(mode=0o700)
     report = run_guest(Path(__file__).resolve().parents[1], args.inputs, args.base,
-                       args.output, args.mode, args.budget)
+                        args.output, args.mode, args.budget, qualification_id=args.qualification_id,
+                        nonce=args.nonce, expected_input_manifest=args.expected_input_manifest)
     (args.output / 'report.json').write_text(json.dumps(report, indent=2) + '\n')
     print(json.dumps({'success': report['success'], 'mode': report['mode'], 'error': report.get('error')}))
     raise SystemExit(0 if report['success'] else 1)

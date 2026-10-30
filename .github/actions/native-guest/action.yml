@@ -9,6 +9,18 @@ inputs:
   budget:
     description: total seconds including acquisition and cleanup
     required: true
+  qualification-id:
+    description: Pre-issued qualification identity (all admission inputs are required together)
+    required: false
+    default: ''
+  native-nonce:
+    description: Pre-issued native execution nonce
+    required: false
+    default: ''
+  input-manifest-sha256:
+    description: Expected checksum manifest from admission
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -21,11 +33,22 @@ runs:
       env:
         NATIVE_MODE: ${{ inputs.mode }}
         NATIVE_BUDGET: ${{ inputs.budget }}
+        QUALIFICATION_ID: ${{ inputs.qualification-id }}
+        NATIVE_NONCE: ${{ inputs.native-nonce }}
+        INPUT_MANIFEST_SHA256: ${{ inputs.input-manifest-sha256 }}
       run: |
         set -euo pipefail
         [[ "$NATIVE_MODE" == render || "$NATIVE_MODE" == native ]]
         [[ "$NATIVE_BUDGET" =~ ^[0-9]+$ ]]
         [[ "${NATIVE_JOB_STARTED:?}" =~ ^[0-9]+$ ]]
+        admission=()
+        if [[ -n "$QUALIFICATION_ID$NATIVE_NONCE$INPUT_MANIFEST_SHA256" ]]; then
+          [[ "$QUALIFICATION_ID" =~ ^[0-9a-f]{64}$ ]]
+          [[ "$NATIVE_NONCE" =~ ^[0-9a-f]{32}$ ]]
+          [[ "$INPUT_MANIFEST_SHA256" =~ ^[0-9a-f]{64}$ ]]
+          admission=(--qualification-id "$QUALIFICATION_ID" --nonce "$NATIVE_NONCE"
+            --expected-input-manifest "$INPUT_MANIFEST_SHA256")
+        fi
         root=$(mktemp -d "$RUNNER_TEMP/pf-native-${NATIVE_MODE}.XXXXXX")
         printf 'root=%s\n' "$root" >> "$GITHUB_OUTPUT"
         python3 -m tools.native_inputs --output "$root/inputs" > "$root/preparation.log" 2>&1
@@ -37,7 +60,7 @@ runs:
         ((elapsed >= 0))
         remaining=$((NATIVE_BUDGET - elapsed))
         python3 -m tools.run_native_guest --inputs "$root/inputs" --base "$root/base.qcow2" \
-          --mode "$NATIVE_MODE" --budget "$remaining" --output "$root/results"
+          --mode "$NATIVE_MODE" --budget "$remaining" --output "$root/results" "${admission[@]}"
     - name: Retain text evidence only
       if: always()
       uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

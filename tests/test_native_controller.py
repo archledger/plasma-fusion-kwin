@@ -1,5 +1,8 @@
 # SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
+import hashlib
+import io
+import json
 import os
 import subprocess
 import tempfile
@@ -7,11 +10,73 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from ci.native.controller import native_command, seed_data
+from ci.native import controller
+from ci.native.controller import load_invocation, native_command, seed_data
 from ci.native.guest import ready_device, recheck_device, verify_container, verify_oci
 
 
 class NativeControllerTest(unittest.TestCase):
+    def test_preissued_invocation_reaches_controller_without_replacement(self):
+        value = {'nonce': 'a' * 32, 'qualification_id': 'b' * 64}
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'native-input').mkdir()
+            (root / 'native-input/invocation.json').write_text(json.dumps(value))
+            self.assertEqual(load_invocation(root), value)
+            output = io.StringIO()
+            with patch.object(controller.os, 'geteuid', return_value=1000), \
+                    patch.object(controller, 'validate_confinement', side_effect=ValueError('stop before devices')), \
+                    patch('sys.stdout', output):
+                self.assertEqual(controller.main('native', root), 1)
+            report = json.loads(output.getvalue())
+            self.assertEqual(report['nonce'], value['nonce'])
+            self.assertEqual(report['qualification_id'], value['qualification_id'])
+
+    def test_invocation_file_is_strict_and_bounded(self):
+        good = {'nonce': 'a' * 32, 'qualification_id': 'b' * 64}
+        variants = [dict(good, nonce='0' * 32), dict(good, nonce=True),
+                    dict(good, qualification_id='bad'), dict(good, extra=1), {}]
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); (root / 'native-input').mkdir()
+            path = root / 'native-input/invocation.json'
+            for value in variants:
+                path.write_text(json.dumps(value))
+                with self.subTest(value=value), self.assertRaises(ValueError):
+                    load_invocation(root)
+            for raw in ['{"nonce":"' + 'a' * 32 + '","nonce":"' + 'a' * 32 + '","qualification_id":null}',
+                        ' ' * 1025 + json.dumps(good)]:
+                path.write_text(raw)
+                with self.subTest(raw=raw[:40]), self.assertRaises(ValueError):
+                    load_invocation(root)
+
+    def test_main_places_admitted_nonce_in_generated_guest_command(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory); inputs = root / 'native-input'; inputs.mkdir()
+            nonce = 'd' * 32
+            (inputs / 'invocation.json').write_text(json.dumps({'nonce': nonce, 'qualification_id': 'e' * 64}))
+            (inputs / 'SHA256SUMS').write_text('fixture checksums\n')
+            (root / 'base.qcow2').write_bytes(b'fixture base')
+            real_open = os.open
+
+            def open_device(path, flags, *args, **kwargs):
+                if str(path) == '/dev/kvm':
+                    return real_open(root / 'fake-device', os.O_RDWR | os.O_CREAT, 0o600)
+                return real_open(path, flags, *args, **kwargs)
+
+            with patch.object(controller.os, 'geteuid', return_value=1000), \
+                    patch.object(controller.os, 'open', side_effect=open_device), \
+                    patch.object(controller.fcntl, 'ioctl', return_value=12), \
+                    patch.object(controller, 'validate_confinement'), \
+                    patch.object(controller, 'validate_image_info'), \
+                    patch.object(controller, 'GUEST_SHA256', hashlib.sha256(b'fixture base').hexdigest()), \
+                    patch.object(controller.subprocess, 'check_output', return_value=b'{}'), \
+                    patch.object(controller.subprocess, 'run') as commands, \
+                    patch.object(controller, 'native_command', side_effect=ValueError('stop before QEMU')), \
+                    patch('sys.stdout', io.StringIO()):
+                self.assertEqual(controller.main('native', root), 1)
+            self.assertIn('python3 -m ci.native.guest ' + nonce + ' native', (root / 'seed/user-data').read_text())
+            self.assertTrue(all(call.args[0][0] in {'qemu-img', 'xorriso'} for call in commands.call_args_list))
+
     def test_qemu_only_adds_readonly_input_medium(self):
         command = native_command(Path('/work'))
         self.assertEqual(command[command.index('-accel') + 1], 'kvm')

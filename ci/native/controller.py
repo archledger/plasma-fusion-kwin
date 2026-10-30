@@ -6,8 +6,8 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import subprocess
-import uuid
 from pathlib import Path
 
 from ci.hypervisor.boot_guest import (
@@ -19,6 +19,23 @@ from ci.hypervisor.boot_guest import (
     validate_image_info,
 )
 from ci.native.transport import MAX_ENCODED_BYTES, decode
+from tools.patchset import object_pairs
+
+
+def validate_invocation(value):
+    require(type(value) is dict and set(value) == {'nonce', 'qualification_id'}, 'invalid invocation fields')
+    for field, length in [('nonce', 32), ('qualification_id', 64)]:
+        item = value[field]
+        if field == 'qualification_id' and item is None:
+            continue
+        require(type(item) is str and re.fullmatch(r'[0-9a-f]{' + str(length) + '}', item)
+                and item != '0' * length, 'invalid invocation identity')
+    return value
+
+
+def load_invocation(root):
+    return validate_invocation(json.loads(read_bounded(root / 'native-input/invocation.json', 1024),
+                                          object_pairs_hook=object_pairs))
 
 
 def native_command(root):
@@ -47,10 +64,11 @@ def seed_data(nonce, mode, manifest_sha):
 
 def main(mode, root=Path('/work')):
     report = {'success': False, 'mode': mode, 'uid': os.geteuid()}
-    nonce = uuid.uuid4().hex
-    report['nonce'] = nonce
     try:
         require(os.geteuid() == 1000, 'controller must run as UID1000')
+        invocation = load_invocation(root)
+        nonce = invocation['nonce']
+        report.update(invocation)
         profile = Path('/proc/self/attr/current').read_text().strip('\n\0')
         validate_confinement(Path('/proc/self/status').read_text(), profile)
         report['apparmor'] = profile
