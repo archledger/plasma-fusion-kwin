@@ -55,3 +55,26 @@ the hardware cannot support KVM; it establishes the current user's access limit.
 Any next design must explicitly supply pinned hypervisor tooling and appropriately
 confined KVM access. Do not silently install packages, change device permissions,
 fall back to TCG, or switch to a self-hosted runner to turn this probe green.
+
+## Restricted container follow-up
+
+`hosted-kvm-container-probe.yml` tests whether the existing Docker daemon can
+provide narrow access without changing host permissions. It uses the published
+digest-pinned dependency image solely as a Python helper, not to build KWin.
+
+The helper runs as UID 1000 with the KVM node's numeric supplementary group. Its
+root filesystem is read-only, capabilities are dropped, AppArmor and
+no-new-privileges remain enabled, and networking, host mounts and shared host
+namespaces are forbidden. Only `/dev/kvm` is assigned; no GPU device is exposed.
+The effective configuration is checked before starting it.
+
+The helper only queries `KVM_GET_API_VERSION`. It creates no VM or vCPU. The host
+script checks that device ownership/mode did not change and removes only its own
+identified container. Registry access uses an empty temporary Docker credential
+configuration, and no host environment or socket is passed into the helper.
+
+A successful result establishes only restricted KVM API access. Hypervisor
+tooling, guest boot, isolation and native tests remain separate requirements.
+If this route fails, a self-hosted option needs its own isolation review; do not
+attach untrusted PR jobs to an existing personal runner or register a new runner
+implicitly.
