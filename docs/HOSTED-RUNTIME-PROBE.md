@@ -78,3 +78,20 @@ tooling, guest boot, isolation and native tests remain separate requirements.
 If this route fails, a self-hosted option needs its own isolation review; do not
 attach untrusted PR jobs to an existing personal runner or register a new runner
 implicitly.
+
+### Restricted-access result
+
+The [2026-10-30 restricted probe](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41067489592)
+passed on the hosted runner. UID 1000, with supplementary group 993, opened the
+mapped KVM device and received API version 12. The helper used the expected
+digest-pinned image, read-only root filesystem, default AppArmor, built-in
+seccomp, no-new-privileges, dropped capabilities, no mounts and no network.
+
+The host device remained owned by UID 0/GID 993 with mode `0660`; no permission
+change was needed. The helper was removed after completion. No VM or vCPU was
+created, and no native suite ran in this probe.
+
+This resolves the narrow access question without switching to a self-hosted
+runner. Missing hypervisor tooling remains: a pinned, isolated tool environment
+and an actual guest-boot test are still required before hosted native CI can be
+accepted. API access alone is not guest or native-test qualification.
