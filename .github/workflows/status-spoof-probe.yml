@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: Required-status collision experiment
+
+on:
+  pull_request:
+    branches: ['validation/native-status-target']
+
+permissions:
+  contents: read
+
+jobs:
+  simulated:
+    name: Native KWin / trusted
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - run: echo 'Controlled same-name check; no native workload was executed.'
