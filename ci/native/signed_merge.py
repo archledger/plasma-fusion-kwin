@@ -14,7 +14,12 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from ci.native.merge_update import MergeUpdateError, read_exact_merge
+from ci.native.merge_update import (
+    MAX_COMMIT_BYTES,
+    MergeUpdateError,
+    read_exact_merge,
+    read_raw_object,
+)
 
 
 class SignatureError(ValueError):
@@ -58,18 +63,19 @@ def signature_fingerprint(status, expected):
     return primary
 
 
-def verify_signed_merge(source, target, *, keyring, fingerprint, signoff):
-    """Verify structure, DCO footer and OpenPGP identity without fetching or pushing."""
+def verify_signed_commit(source, commit, *, keyring, fingerprint, signoff):
+    """Return (raw commit, signer); no parent semantics or freshness is inferred."""
     require(type(fingerprint) is str and re.fullmatch(r'(?:[A-F0-9]{40}|[A-F0-9]{64})',
                                                     fingerprint), 'invalid pinned fingerprint')
     require(type(signoff) is str and signoff.startswith('Signed-off-by: ')
             and '\n' not in signoff and '\r' not in signoff, 'invalid required signoff')
     try:
-        raw = read_exact_merge(source, target)
+        raw = read_raw_object(source, commit, 'commit', limit=MAX_COMMIT_BYTES).decode(
+            'utf-8', errors='surrogateescape')
         keyring = Path(keyring).resolve(strict=True)
         require(keyring.is_dir(), 'keyring is not a directory')
     except (MergeUpdateError, OSError, TypeError) as error:
-        raise SignatureError('cannot verify the exact merge or trusted keyring') from error
+        raise SignatureError('cannot read the exact commit or trusted keyring') from error
     headers, _, message = raw.partition('\n\n')
     require(sum(line.startswith('gpgsig ') for line in headers.split('\n')) == 1,
             'expected one embedded OpenPGP signature')
@@ -83,7 +89,7 @@ def verify_signed_merge(source, target, *, keyring, fingerprint, signoff):
     gpg = shutil.which('gpg')
     require(gpg is not None, 'GnuPG is unavailable')
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    env.update(GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1')
+    env.update(GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1')
     with tempfile.TemporaryDirectory(prefix='native-signature-') as temporary:
         wrapper = Path(temporary) / 'verify-gpg'
         command = [gpg, '--no-options', '--homedir', str(keyring), '--batch', '--no-tty',
@@ -95,10 +101,21 @@ def verify_signed_merge(source, target, *, keyring, fingerprint, signoff):
             result = subprocess.run(
                 ['git', '--no-replace-objects', '-c', 'gpg.format=openpgp',
                  '-c', 'gpg.program=' + str(wrapper), '-c', 'gpg.openpgp.program=' + str(wrapper),
-                 'verify-commit', '--raw', target.commit], cwd=source, env=env,
+                 'verify-commit', '--raw', commit], cwd=source, env=env,
                 capture_output=True, text=True, errors='replace', timeout=30, check=False)
         except (OSError, subprocess.TimeoutExpired) as error:
             raise SignatureError('signature verification did not complete') from error
     require(result.returncode == 0, 'signature verification failed')
     primary = signature_fingerprint(result.stderr, fingerprint)
+    return raw, primary
+
+
+def verify_signed_merge(source, target, *, keyring, fingerprint, signoff):
+    """Verify structure, DCO footer and OpenPGP identity without fetching or pushing."""
+    try:
+        read_exact_merge(source, target)
+    except MergeUpdateError as error:
+        raise SignatureError('cannot verify the exact merge') from error
+    _, primary = verify_signed_commit(source, target.commit, keyring=keyring,
+                                      fingerprint=fingerprint, signoff=signoff)
     return SignedMerge(target.commit, target.tree, primary, target.base, target.head)

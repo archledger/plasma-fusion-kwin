@@ -232,6 +232,31 @@ mechanics, not production signatures, worker authentication, actual VM cleanup,
 bootstrap cutover or recovery. It adds no queue, daemon, heartbeat, lease renewal
 or automatic failover. None of its results authorizes production use.
 
+### Signed-state reader
+
+`ci/native/coordination.py:read_signed_coordination()` authenticates one local
+snapshot. The caller supplies the exact commit, trusted `QualificationPolicy`,
+public keyring, DCO signoff, expected parent, generation, epoch and cutover digest.
+The reader reuses the existing OpenPGP verifier and the record schema shared with
+the local probe. It accepts only a bounded commit with the exact raw parent and a
+tree containing one regular `coordination.json` file of at most 64 KiB. Duplicate
+JSON keys, invalid types, extra fields and mismatched identities are refused.
+
+Only generation zero may have no parent. Accepting that record authenticates its
+contents, not the claimed cutover or quiescence. Likewise, a pinned parent does
+not validate the predecessor's history or authorize this transition. Expected
+values must not be copied from the untrusted record to make it pass.
+
+The return value is data, not a worker or write capability. The reader does not
+check the remote tip, fetch objects, push refs or launch anything. Signed history
+validation, transition authorization, worker handoff and runtime cleanup remain
+separate requirements. Missing local objects fail rather than trigger a lazy
+fetch. Raw reads and signature status follow Git's
+[cat-file](https://git-scm.com/docs/git-cat-file),
+[verify-commit](https://git-scm.com/docs/git-verify-commit) and
+[GIT_NO_LAZY_FETCH](https://git-scm.com/docs/git#Documentation/git.txt-GITNOLAZYFETCH)
+interfaces; the installed Git 2.56.0 manuals were checked during implementation.
+
 ### Acceptance cases
 
 - Race two acquisitions of one idle record through real Git receive-pack.

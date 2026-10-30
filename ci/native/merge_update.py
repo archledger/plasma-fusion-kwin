@@ -38,19 +38,34 @@ def require(condition, message):
         raise MergeUpdateError(message)
 
 
-def git(source, *arguments, raw=False):
+def git(source, *arguments, raw=False, binary=False):
     # Preserve the maintainer's configured authentication and pre-push hooks,
     # but ignore ambient object-directory overrides and replacement objects.
     env = {key: value for key, value in os.environ.items() if not key.startswith('GIT_')}
-    env.update(GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1')
+    env.update(GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1', GIT_NO_LAZY_FETCH='1')
     try:
         result = subprocess.run(['git', '--no-replace-objects', *arguments], cwd=source,
-                                env=env, capture_output=True, text=True, errors='surrogateescape',
+                                env=env, capture_output=True, text=not binary,
+                                errors=None if binary else 'surrogateescape',
                                 timeout=60, check=False)
     except (OSError, subprocess.TimeoutExpired) as error:
         raise MergeUpdateError('Git operation did not complete; reconcile remote state') from error
     require(result.returncode == 0, f'git {arguments[0]} refused or failed; reconcile remote state')
     return result.stdout if raw else result.stdout.strip()
+
+
+def read_raw_object(source, oid, kind, *, limit):
+    """Read a size-bounded local object, without filters or implicit fetching."""
+    require(type(oid) is str and re.fullmatch(r'[0-9a-f]{40}', oid)
+            and oid != '0' * 40, 'invalid Git object identity')
+    require(kind in {'commit', 'tree', 'blob'}, 'unsupported Git object type')
+    require(git(source, 'cat-file', '-t', oid) == kind, 'unexpected Git object type')
+    size = git(source, 'cat-file', '-s', oid)
+    require(re.fullmatch(r'[0-9]{1,8}', size) and 0 < int(size) <= limit,
+            'Git object is oversized or has an invalid size')
+    raw = git(source, 'cat-file', kind, oid, raw=True, binary=True)
+    require(len(raw) == int(size), 'Git object size differs')
+    return raw
 
 
 def read_exact_merge(source, target):
@@ -61,16 +76,10 @@ def read_exact_merge(source, target):
                 and value != '0' * 40, 'invalid Git object identity')
     require(len({target.base, target.head, target.commit}) == 3,
             'expected a distinct merge commit')
-    require(git(source, 'cat-file', '-t', target.commit) == 'commit',
-            'qualified object is not a commit')
-    size = git(source, 'cat-file', '-s', target.commit)
-    require(re.fullmatch(r'[0-9]{1,8}', size) and 0 < int(size) <= MAX_COMMIT_BYTES,
-            'qualified commit is oversized or has an invalid size')
     # Pretty-print history can honor local grafts even with replacement objects
     # disabled. Only raw object headers describe the commit actually pushed.
-    raw = git(source, 'cat-file', 'commit', target.commit, raw=True)
-    require(len(raw.encode('utf-8', errors='surrogateescape')) == int(size),
-            'qualified commit size differs')
+    raw = read_raw_object(source, target.commit, 'commit', limit=MAX_COMMIT_BYTES).decode(
+        'utf-8', errors='surrogateescape')
     headers, separator, _ = raw.partition('\n\n')
     require(separator, 'qualified commit has no header terminator')
     lines = headers.split('\n')

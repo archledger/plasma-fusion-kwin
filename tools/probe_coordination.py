@@ -7,7 +7,6 @@ real signing key, GitHub credential or external repository can be supplied. The
 evidence booleans below are simulations, not proof of real runtime quiescence.
 """
 import copy
-import hashlib
 import json
 import os
 import subprocess
@@ -16,14 +15,12 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 
+from ci.native.coordination import validate_record
 from ci.native.merge_update import MergeCommit
 from ci.native.qualification import (
     canonical_json,
     digest,
-    identifier,
-    keys,
     require,
-    validate_admission,
 )
 
 
@@ -58,78 +55,6 @@ def proposed(current, state, **changes):
     value = copy.deepcopy(current)
     value.update(state=state, generation=current['generation'] + 1, **changes)
     return value
-
-
-def validate_record(value, policy):
-    keys(value, ['version', 'repository_id', 'target_ref', 'epoch', 'cutover_digest',
-                 'generation', 'state', 'operation', 'grant', 'completion'])
-    require(type(value['version']) is int and value['version'] == 1, 'wrong coordination version')
-    require(identifier(value['repository_id']) == policy.repository_id
-            and value['target_ref'] == 'refs/heads/main', 'wrong coordination target')
-    digest(value['epoch'], 32)
-    digest(value['cutover_digest'], 64)
-    require(type(value['generation']) is int and 0 <= value['generation'] < 2**63,
-            'invalid coordination generation')
-    phase = value['state']
-    require(type(phase) is str and phase in {'idle', 'reserved', 'dispatching', 'granted', 'running', 'finalizing'},
-            'unknown coordination state')
-    if phase == 'idle':
-        require(value['operation'] is None and value['grant'] is None, 'idle record has live authority')
-        completion = value['completion']
-        if value['generation'] == 0:
-            require(completion is None, 'initial record has a completion')
-        else:
-            keys(completion, ['operation_id', 'qualification_id', 'outcome', 'main_sha'])
-            digest(completion['operation_id'], 32)
-            if completion['qualification_id'] is not None:
-                digest(completion['qualification_id'], 64)
-            if completion['main_sha'] is not None:
-                digest(completion['main_sha'])
-            outcome = completion['outcome']
-            require(type(outcome) is str and outcome in {'aborted-before-dispatch', 'failed', 'cancelled',
-                                                        'qualified-only', 'finalized', 'rejected'},
-                    'invalid completion')
-            require((completion['qualification_id'] is None) == (outcome == 'aborted-before-dispatch'),
-                    'completion qualification is inconsistent')
-            require((completion['main_sha'] is not None) == (outcome in {'finalized', 'rejected'}),
-                    'completion main result is inconsistent')
-        return
-    require(value['generation'] > 0 and value['completion'] is None, 'live record has a completion')
-    operation = value['operation']
-    keys(operation, ['id', 'holder_fingerprint', 'admission', 'workflow_id', 'launcher', 'nonce'])
-    digest(operation['id'], 32)
-    require(operation['id'] == operation['nonce'] and operation['holder_fingerprint'] == policy.fingerprint,
-            'wrong operation owner or nonce')
-    require(identifier(operation['workflow_id']) == policy.workflow_id
-            and digest(operation['launcher']) == policy.launcher, 'wrong operation launcher')
-    validate_admission(operation['admission'])
-    require(operation['admission']['repository_id'] == policy.repository_id
-            and operation['admission']['upstream_commit'] == policy.upstream_commit, 'wrong operation source')
-    grant = value['grant']
-    if phase in {'reserved', 'dispatching'}:
-        require(grant is None, 'ungranted state has a grant')
-        return
-    keys(grant, ['run_id', 'run_number', 'run_attempt', 'qualification_id',
-                 'native_job_id', 'worker_nonce', 'finalizer_nonce'])
-    identifier(grant['run_id'])
-    identifier(grant['run_number'])
-    require(type(grant['run_attempt']) is int and grant['run_attempt'] == 1, 'rerun grant is forbidden')
-    identity = {'schema_version': 1, 'admission': operation['admission'], 'execution': {
-        'workflow_id': operation['workflow_id'], 'run_id': grant['run_id'],
-        'run_number': grant['run_number'], 'run_attempt': 1,
-        'launcher': operation['launcher'], 'nonce': operation['nonce']}}
-    require(grant['qualification_id'] == hashlib.sha256(canonical_json(identity)).hexdigest(),
-            'grant does not bind the operation')
-    if phase == 'granted':
-        require(grant['native_job_id'] is None and grant['worker_nonce'] is None
-                and grant['finalizer_nonce'] is None, 'unconsumed grant has a consumer')
-    else:
-        identifier(grant['native_job_id'])
-        digest(grant['worker_nonce'], 32)
-        if phase == 'running':
-            require(grant['finalizer_nonce'] is None, 'running grant has a finalizer')
-        else:
-            digest(grant['finalizer_nonce'], 32)
 
 
 def quiescent(evidence):
