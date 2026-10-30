@@ -111,7 +111,7 @@ def main():
         sha = digest(os.environ['COORDINATION_SHA'])
         git(source, 'fetch', '--no-tags', '--depth=5', ENDPOINT, sha, deadline=deadline)
         current = read_signed_coordination(source, sha, policy=policy, keyring=keyring, signoff=SIGNOFF,
-            expected_parent=os.environ['PARENT_SHA'], expected_generation=2,
+            expected_parent=os.environ['PARENT_SHA'], expected_generation=int(os.environ['EXPECTED_GENERATION']),
             expected_epoch=os.environ['EPOCH'], expected_cutover_digest=os.environ['CUTOVER_DIGEST'])
         require(current.record['state'] == 'dispatching'
                 and canonical_json(current.record['operation']) == canonical_json(operation), 'wrong dispatch')

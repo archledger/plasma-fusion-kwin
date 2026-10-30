@@ -303,6 +303,8 @@ one-shot guard accepts that state once; accepting the earlier, still-unclaimed
 grant and accepting the running claim a second time must both fail.
 The final acknowledgement records those results and `native_executed: false`.
 The coordinator requires the successful terminal run before releasing the lock.
+The expected initial generation is a required dispatch input, not a fixed first-
+operation value or a value copied from the unverified record.
 
 The worker reuses the pinned `actions/upload-artifact` entrypoint rather than
 implementing another artifact protocol. A small local JavaScript action supplies

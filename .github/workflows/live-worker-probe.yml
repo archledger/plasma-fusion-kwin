@@ -14,6 +14,10 @@ on:
         description: Expected reserved parent
         required: true
         type: string
+      expected_generation:
+        description: Expected dispatching generation, including reused locks
+        required: true
+        type: string
       epoch:
         description: Validation epoch
         required: true
@@ -60,6 +64,7 @@ jobs:
         env:
           COORDINATION_SHA: ${{ inputs.coordination_sha }}
           PARENT_SHA: ${{ inputs.parent_sha }}
+          EXPECTED_GENERATION: ${{ inputs.expected_generation }}
           EPOCH: ${{ inputs.epoch }}
           CUTOVER_DIGEST: ${{ inputs.cutover_digest }}
           STATE_REF: ${{ inputs.state_ref }}

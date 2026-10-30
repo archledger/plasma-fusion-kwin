@@ -254,9 +254,10 @@ class HandoffTest(unittest.TestCase):
             self.assertEqual(run.call_args.args[0], ['/trusted/node', '_probe-uploader/dist/upload/index.js'])
 
     def test_one_foreground_worker_emits_request_claim_and_ack(self):
+        self.state = replace(self.state, record=dict(self.state.record, generation=7))
         grant = self.verify()
         granted = replace(self.state, commit='d' * 40, record=dict(
-            self.state.record, state='granted', generation=3, grant=grant))
+            self.state.record, state='granted', generation=8, grant=grant))
         workers, emitted = [], []
 
         def create(directory, policy, **identity):
@@ -268,7 +269,7 @@ class HandoffTest(unittest.TestCase):
             if phase == 'granted':
                 return granted
             return replace(granted, commit='e' * 40, record=dict(granted.record,
-                state='running', generation=4, grant=dict(grant, native_job_id=700,
+                state='running', generation=9, grant=dict(grant, native_job_id=700,
                                                         worker_nonce=workers[0].nonce)))
 
         self.job.update(name='live-worker', status='in_progress', conclusion=None)
@@ -281,11 +282,11 @@ class HandoffTest(unittest.TestCase):
             'OPERATION_JSON': json.dumps(self.state.record['operation']), 'GITHUB_SHA': self.policy.launcher,
             'GITHUB_RUN_ID': '500', 'GITHUB_RUN_NUMBER': '12', 'RUNNER_TEMP': directory,
             'COORDINATION_SHA': self.state.commit, 'PARENT_SHA': self.state.parent,
-            'EPOCH': 'e' * 32, 'CUTOVER_DIGEST': 'f' * 64}), \
+            'EXPECTED_GENERATION': '7', 'EPOCH': 'e' * 32, 'CUTOVER_DIGEST': 'f' * 64}), \
                 patch.object(live, 'PUBLIC_KEY_SHA256', hashlib.sha256(b'fixture public key').hexdigest()), \
                 patch.object(live, 'build_opener') as opener, \
                 patch.object(live, 'QualificationPolicy', return_value=self.policy), \
-                patch.object(live, 'read_signed_coordination', return_value=self.state), \
+                patch.object(live, 'read_signed_coordination', return_value=self.state) as read_state, \
                 patch.object(live, 'ProofAPI') as api, patch.object(live, 'git'), \
                 patch.object(live.subprocess, 'run'), patch.object(live, 'WorkerClaim', side_effect=create), \
                 patch.object(live, 'wait_next', side_effect=next_state), \
@@ -293,6 +294,7 @@ class HandoffTest(unittest.TestCase):
             opener.return_value.open.return_value = response
             api.return_value.get.return_value = self.jobs
             live.main()
+        self.assertEqual(read_state.call_args.kwargs['expected_generation'], 7)
         self.assertEqual(len(workers), 1)
         self.assertEqual([kind for kind, _ in emitted], ['request', 'claim', 'ack'])
         self.assertTrue(emitted[-1][1]['accepted'])
@@ -307,6 +309,12 @@ class HandoffWorkflowTest(unittest.TestCase):
         push = path.read_text().split('  push:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
         self.assertIn("branches: ['validation/native-handoff-*']", push)
         self.assertNotIn('paths', push)
+
+    def test_live_worker_receives_explicit_expected_generation(self):
+        path = Path(__file__).resolve().parents[1] / '.github/workflows/live-worker-probe.yml'
+        text = path.read_text()
+        self.assertIn('      expected_generation:\n', text)
+        self.assertIn('EXPECTED_GENERATION: ${{ inputs.expected_generation }}', text)
 
 
 if __name__ == '__main__':
