@@ -1,0 +1,48 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Hosted native guest qualification
+
+on:
+  push:
+    branches: ['ci/hosted-native-qualification']
+    paths:
+      - '.github/**'
+      - 'ci/**'
+      - 'tools/**'
+      - 'tests/**'
+      - 'patchset.json'
+      - 'patches/**'
+
+permissions:
+  contents: read
+
+jobs:
+  renderer:
+    if: github.repository == 'archledger/plasma-fusion-kwin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Start bounded job budget
+        run: echo "NATIVE_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-guest
+        with:
+          mode: render
+          budget: '1050'
+
+  native:
+    needs: renderer
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Start bounded job budget
+        run: echo "NATIVE_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/native-guest
+        with:
+          mode: native
+          budget: '4200'
