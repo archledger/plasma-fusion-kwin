@@ -3,7 +3,8 @@
 # Hosted native KWin qualification plan
 
 Status: the owner approved this bounded plan, including the 75-minute hosted job
-limit. Implementation is in progress; no hosted native workload has run yet.
+limit. Renderer and native qualification passed in run 41079594986. Evidence
+review and checksum-verified archival are complete; general PR-native CI is separate.
 
 ## Goal and scope
 

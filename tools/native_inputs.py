@@ -88,7 +88,8 @@ def archive_tree(source, expected_tree, output):
     require(actual == expected_tree, 'source index tree differs')
     git(source, 'diff', '--quiet')
     # HEAD remains unpatched. Archive the verified index tree with fixed times.
-    git(source, 'archive', '--format=tar', '--mtime=@0', '--output=' + str(Path(output).absolute()), expected_tree)
+    git(source, 'archive', '--format=tar', '--mtime=1970-01-01T00:00:00Z',
+        '--output=' + str(Path(output).absolute()), expected_tree)
     digest, size = regular_digest(Path(output), 128 * 1024**2)
     return {'tree': expected_tree, 'sha256': digest, 'bytes': size}
 

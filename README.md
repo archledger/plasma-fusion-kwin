@@ -28,7 +28,8 @@ user to patched KWin. See [POLICY.md](POLICY.md) for the installation and mainte
 
 This repository carries one pinned opacity patch and fast source/patch validation. It does
 **not** provide packages, releases, a package repository or an installer. Nothing here changes
-the installed desktop. The native build/test lane is not yet qualified.
+the installed desktop. A [trusted-branch native guest qualification](docs/NATIVE-GUEST.md)
+passed; a general pull-request native lane and end-user packages remain out of scope.
 
 The first historical source candidate is KWin `v6.7.5`, pinned in `patchset.json` with the patch's
 digest, provenance and expected result tree. See [validation details](docs/VALIDATION.md) and the
