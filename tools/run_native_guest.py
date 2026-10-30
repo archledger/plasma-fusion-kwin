@@ -41,6 +41,26 @@ PAYLOAD = (
     'ci/native/transport.py', 'ci/native/results.py', 'ci/native/runtime_assets.py',
     'ci/native/render_probe.c', 'tools/__init__.py', 'tools/native_inputs.py', 'tools/patchset.py',
 )
+RUNTIME_HOST_FIELDS = (
+    'Privileged', 'ReadonlyRootfs', 'NetworkMode', 'Binds', 'IpcMode', 'CgroupnsMode',
+    'PidMode', 'UTSMode', 'Devices', 'DeviceRequests', 'DeviceCgroupRules', 'GroupAdd',
+    'CapAdd', 'CapDrop', 'SecurityOpt', 'AutoRemove', 'RestartPolicy', 'Memory',
+    'MemorySwap', 'PidsLimit', 'NanoCpus',
+)
+
+
+def runtime_evidence(info):
+    """Retain enforced runtime fields, never container environment or unrelated labels."""
+    config = info['Config']
+    return {
+        'Id': info['Id'], 'Name': info['Name'], 'Image': info['Image'],
+        'Config': {**{key: config[key] for key in ['Image', 'User', 'Entrypoint', 'Cmd']},
+                   'Labels': {LABEL: config['Labels'].get(LABEL)}},
+        'Mounts': [{key: mount[key] for key in ['Type', 'Name', 'Destination', 'RW', 'Driver']}
+                   for mount in info['Mounts']],
+        'HostConfig': {key: info['HostConfig'].get(key) for key in RUNTIME_HOST_FIELDS},
+        'AppArmorProfile': info['AppArmorProfile'],
+    }
 
 
 def container_args(name, token, volume, gid, mode):
@@ -156,6 +176,7 @@ def run_guest(repo, prepared, base, output, mode, budget):
             security = json.loads(checked(['info', '--format={{json .SecurityOptions}}']))
             require('name=apparmor' in security and 'name=seccomp,profile=builtin' in security,
                     'Docker confinement unavailable')
+            report['engine_security_options'] = security
             require(shutil.disk_usage(output).free >= 12 * 1024**3, 'insufficient temporary storage')
             with tempfile.TemporaryFile(dir=temporary) as archive:
                 inputs, packages, manifest_sha = pack_inputs(repo, prepared, base, archive)
@@ -166,12 +187,18 @@ def run_guest(repo, prepared, base, output, mode, budget):
                         'hypervisor image configuration differs')
                 volume_attempted = True
                 checked(['volume', 'create', '--driver=local', '--label=' + LABEL + '=' + token, volume])
-                validate_volume(json.loads(checked(['volume', 'inspect', volume]))[0], volume, token)
+                volume_info = json.loads(checked(['volume', 'inspect', volume]))[0]
+                validate_volume(volume_info, volume, token)
+                report['volume'] = {**{key: volume_info[key] for key in ['Name', 'Driver', 'Scope']},
+                                    'Options': volume_info.get('Options'),
+                                    'Labels': {LABEL: volume_info['Labels'].get(LABEL)}}
                 command = container_args(name, token, volume, before['gid'], mode)
                 container_attempted = True
                 cid = checked(command).strip()
                 info = json.loads(checked(['inspect', cid]))[0]
-                report['container'] = validate_runtime(info, name, token, volume, IMAGE, CONFIG, before['gid'])
+                report['runtime'] = runtime_evidence(info)
+                report['container'] = validate_runtime(report['runtime'], name, token, volume,
+                                                       IMAGE, CONFIG, before['gid'])
                 require(info['Config']['Entrypoint'] == ['/usr/bin/python3'] and
                         info['Config']['Cmd'] == ['-I', '-B', '-c', BOOTSTRAP, mode], 'unexpected controller command')
                 checked(['cp', '--archive', '-', cid + ':/work'], 180, stdin=archive)

@@ -120,6 +120,23 @@ class NativeRunnerTest(unittest.TestCase):
         self.assertTrue(report['success'])
         self.assertFalse(state['container'] or state['volume'])
 
+    def test_runtime_evidence_omits_environment_and_unrelated_settings(self):
+        info = {
+            'Id': 'a' * 64, 'Name': '/fixture', 'Image': 'image-id',
+            'Config': {'Image': 'image-ref', 'User': '1000:1000', 'Entrypoint': [], 'Cmd': [],
+                       'Env': ['PRIVATE_FIXTURE=not-a-real-secret'],
+                       'Labels': {LABEL: 'owned', 'private-fixture': 'do-not-copy'}},
+            'Mounts': [{'Type': 'volume', 'Name': 'fixture', 'Destination': '/work',
+                        'RW': True, 'Driver': 'local', 'Source': '/private/fixture'}],
+            'HostConfig': {'Binds': None, 'LogConfig': {'private-fixture': 'do-not-copy'}},
+            'AppArmorProfile': 'docker-default',
+        }
+        value = run_native_guest.runtime_evidence(info)
+        self.assertNotIn('Env', value['Config'])
+        self.assertEqual(value['Config']['Labels'], {LABEL: 'owned'})
+        self.assertNotIn('Source', value['Mounts'][0])
+        self.assertNotIn('LogConfig', value['HostConfig'])
+
     def test_refusals_and_timeout_leave_no_guest(self):
         for reason in ['unsafe', 'budget', 'timeout']:
             with self.subTest(reason=reason):
