@@ -34,3 +34,24 @@ The output path must not already exist. No secret environment variables or
 machine-specific identifiers are collected. The documented runner software
 inventory is supporting evidence, not a substitute for the live report:
 https://github.com/actions/runner-images/blob/main/images/ubuntu/Ubuntu2404-Readme.md
+
+## Observed hosted result
+
+The [2026-10-30 probe](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41063494999)
+ran on Ubuntu image `20261026.354.1`, kernel `7.0.0-1017-azure`, as UID 1001.
+It correctly stopped with unmet prerequisites:
+
+- Opening `/dev/kvm` returned `EACCES` for the runner user.
+- `qemu-system-x86_64`, `qemu-img`, `virsh`, `virt-xml-validate` and `xorriso`
+  were unavailable; Python could not import libvirt.
+- Podman was present. The runner had four CPUs, about 16 GB of memory and enough
+  free storage, so resource capacity was not the reported blocker.
+
+No VM, installation, module load or permission change was attempted. The workflow
+retained `hosted-native-prerequisites.json`; the separate fast checks passed.
+
+The tested runner cannot use the local recipe unchanged. `EACCES` does not prove
+the hardware cannot support KVM; it establishes the current user's access limit.
+Any next design must explicitly supply pinned hypervisor tooling and appropriately
+confined KVM access. Do not silently install packages, change device permissions,
+fall back to TCG, or switch to a self-hosted runner to turn this probe green.
