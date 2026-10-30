@@ -95,3 +95,7 @@ This resolves the narrow access question without switching to a self-hosted
 runner. Missing hypervisor tooling remains: a pinned, isolated tool environment
 and an actual guest-boot test are still required before hosted native CI can be
 accepted. API access alone is not guest or native-test qualification.
+
+The later [pinned hypervisor and isolated guest-boot probe](HYPERVISOR.md)
+passed on the hosted runner. That resolves tooling and boot feasibility for the
+bounded offline test, not native KWin regression or rendering qualification.

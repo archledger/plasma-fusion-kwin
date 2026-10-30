@@ -88,8 +88,8 @@ ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:279f86086562a41840b59735
 
 `hosted-guest-boot.yml` uses that digest and the matching image configuration ID.
 It runs only for relevant changes on the dedicated `ci/hosted-guest-boot` branch,
-not for arbitrary pull requests. Hosted guest boot remains pending. The earlier
-restricted [KVM API probe](HOSTED-RUNTIME-PROBE.md) passed but created no VM.
+not for arbitrary pull requests. The earlier restricted
+[KVM API probe](HOSTED-RUNTIME-PROBE.md) passed but created no VM.
 
 The [first hosted guest attempt](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41071772300)
 did not qualify. QEMU exited normally and the retained log showed guest shutdown,
@@ -101,6 +101,23 @@ The corrective probe starts its receipt on a fresh console line and keeps the
 complete bounded serial log on failure. Cleanup recognizes Docker's lowercase
 `no such volume` response and records removal and follow-up inspection results.
 These changes do not relax receipt validation or the isolation requirements.
+
+### Qualified hosted boot
+
+The [corrected hosted run](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41072858492)
+passed at `f6dff5abce5d15e8dfde090ed1162158704efa1e`. The pinned public image
+booted with KVM under the enforcing Docker profile. The guest reported kernel
+`6.19.10-300.fc44.x86_64` and the expected vgem module checksum without loading
+the module. QEMU exited successfully.
+
+The launcher confirmed removal of both its container and named volume. Host
+`/dev/kvm` ownership and mode remained UID 0, GID 993 and `0660`. No host bind,
+guest network, GPU, privileged mode or host configuration change was used.
+
+This qualifies the bounded offline boot in that hosted environment. It does
+not qualify arbitrary pull-request workloads, rendering, native KWin tests or
+physical hardware. The next native-CI work must preserve these boundaries and
+separately prove the required regressions execute without skips.
 
 ## References
 
