@@ -1,5 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
+import io
 import tempfile
 import types
 import unittest
@@ -49,6 +50,16 @@ class GuestPayloadTest(unittest.TestCase):
         serial, nonce, _ = self.run_payload(['lo'], '0' * 64)
         with self.assertRaises(ValueError):
             parse_guest_result(serial, nonce)
+
+    def test_receipt_starts_on_a_new_line_after_a_console_prompt(self):
+        stream = io.StringIO('fedora login: ')
+        stream.seek(0, io.SEEK_END)
+        nonce = '1' * 32
+        receipt = {'nonce': nonce, 'uid': 0, 'success': True,
+                   'kernel': '6.19.10-300.fc44.x86_64', 'vgem_available': True,
+                   'vgem_sha256': 'bc6aa5f12b7fb27d4c2184cffba85b989d9e1a385bb6b42c7cc831e427f65ff8'}
+        guest_probe.write_receipt(stream, nonce, receipt)
+        self.assertTrue(parse_guest_result(stream.getvalue(), nonce)['success'])
 
 
 if __name__ == '__main__':
