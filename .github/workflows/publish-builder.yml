@@ -1,0 +1,87 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Publish CI dependency image
+
+on:
+  push:
+    tags:
+      - 'ci-builder-*'
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'archledger/plasma-fusion-kwin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/archledger/plasma-fusion-kwin-builder
+      TAG: ${{ github.ref_name }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate the explicit publishing tag and lock
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/builder-evidence"
+          [[ "$TAG" =~ ^ci-builder-[0-9]{8}\.[1-9][0-9]*$ ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          bash ci/builder/install-locked.sh --check ci/builder/packages.lock
+          python3 -m unittest discover -s tests -v 2>&1 |
+            tee "$RUNNER_TEMP/builder-evidence/unit.log"
+
+      - name: Build the dependency-only image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" \
+            --tag "$IMAGE:$TAG" --file ci/builder/Containerfile ci/builder 2>&1 |
+            tee "$RUNNER_TEMP/builder-evidence/build.log"
+
+      - name: Retain the image inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          container=$(docker create --network none --cap-drop ALL \
+            --security-opt no-new-privileges "$IMAGE:$TAG" /usr/bin/true)
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          docker cp "$container:/usr/share/plasma-fusion-kwin-builder/packages.txt" \
+            "$RUNNER_TEMP/builder-evidence/packages.txt"
+          docker cp "$container:/usr/share/plasma-fusion-kwin-builder/packages.sha256" \
+            "$RUNNER_TEMP/builder-evidence/packages.sha256"
+          docker cp "$container:/usr/share/plasma-fusion-kwin-builder/package-sources.tsv" \
+            "$RUNNER_TEMP/builder-evidence/package-sources.tsv"
+          cp ci/builder/packages.lock "$RUNNER_TEMP/builder-evidence/packages.lock"
+          docker image inspect --format '{{.Id}} {{.Config.User}}' "$IMAGE:$TAG" \
+            > "$RUNNER_TEMP/builder-evidence/local-image.txt"
+
+      - name: Publish the approved CI image
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker push "$IMAGE:$TAG" 2>&1 | tee "$RUNNER_TEMP/builder-evidence/push.log"
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+          [[ "$reference" =~ ^ghcr\.io/archledger/plasma-fusion-kwin-builder@sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$reference" > "$RUNNER_TEMP/builder-evidence/image-reference.txt"
+
+      - name: Retain publication evidence only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: ci-builder-publication
+          path: ${{ runner.temp }}/builder-evidence/
+          if-no-files-found: error
+          retention-days: 14

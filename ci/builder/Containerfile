@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+FROM registry.fedoraproject.org/fedora@sha256:351d714a39c16fda7f3d266c0e41b4f34b51e8dfc62f12ae83b8169d7a3c5c64
+
+COPY packages.lock install-locked.sh /tmp/ci-builder/
+RUN FUSION_CI_IMAGE_BUILD=1 /bin/bash /tmp/ci-builder/install-locked.sh --install /tmp/ci-builder/packages.lock \
+    && install -m 0644 /tmp/ci-builder/packages.lock /usr/share/plasma-fusion-kwin-builder/packages.lock \
+    && rm /tmp/ci-builder/packages.lock /tmp/ci-builder/install-locked.sh \
+    && rmdir /tmp/ci-builder \
+    && useradd --uid 1000 --create-home builder \
+    && install -d -m 1777 /tmp/.X11-unix
+
+ENV LANG=C.UTF-8 HOME=/home/builder
+USER builder
+WORKDIR /home/builder
+
+ARG SOURCE_REVISION=working-tree
+LABEL org.opencontainers.image.source="https://github.com/archledger/plasma-fusion-kwin"
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
+LABEL org.opencontainers.image.title="Plasma Fusion KWin CI dependencies"
+LABEL org.opencontainers.image.description="Fedora 44 build dependencies; no patched KWin installation"
+LABEL org.opencontainers.image.vendor="Plasma Fusion"
+LABEL org.opencontainers.image.url="https://github.com/archledger/plasma-fusion-kwin"
+LABEL org.opencontainers.image.licenses="NOASSERTION"
