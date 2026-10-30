@@ -5,7 +5,7 @@
 - [x] Confirm the bounded native-run plan before workload execution.
 - [x] Add strict native-result and private runtime-QML staging tests/helpers.
   - Verify exact suites/cases, zero failures/skips/blacklists, renderer and hashes.
-- [ ] Add digest-preserving source/image input preparation and text transport.
+- [x] Add digest-preserving source/image input preparation and text transport.
   - Reject altered blobs/trees, unsafe names, missing evidence and size overruns.
 - [ ] Add and review the offline guest/outer controllers and cleanup deadlines.
   - Require the fixed unprivileged isolation and guest-only vgem device.
