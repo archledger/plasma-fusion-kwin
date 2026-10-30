@@ -7,6 +7,7 @@ import io
 import json
 import unittest
 import zipfile
+from pathlib import Path
 
 from ci.native.coordination import SignedCoordination
 from ci.native.handoff import HandoffError, verify_handoff_request
@@ -157,6 +158,14 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaises(HandoffError):
             verify_handoff_request(self, self.policy, self.state.record, run_id=500,
                                    artifact_id=800, archive=self.archive(), expected_branch=self.branch)
+
+
+class HandoffWorkflowTest(unittest.TestCase):
+    def test_registration_does_not_depend_on_a_changed_file_list(self):
+        path = Path(__file__).resolve().parents[1] / '.github/workflows/handoff-probe.yml'
+        push = path.read_text().split('  push:\n', 1)[1].split('  workflow_dispatch:', 1)[0]
+        self.assertIn("branches: ['validation/native-handoff-*']", push)
+        self.assertNotIn('paths', push)
 
 
 if __name__ == '__main__':

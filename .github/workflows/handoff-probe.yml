@@ -5,7 +5,6 @@ name: Coordination request probe
 on:
   push:
     branches: ['validation/native-handoff-*']
-    paths: ['.github/workflows/handoff-probe.yml']
   workflow_dispatch:
     inputs:
       coordination_sha:
