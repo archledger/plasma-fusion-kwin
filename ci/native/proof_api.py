@@ -20,10 +20,11 @@ RESOURCES = re.compile(
     r'(?:|actions/runs/[1-9][0-9]*(?:/attempts/[1-9][0-9]*/jobs)?'
     r'|actions/(?:artifacts|jobs|workflows)/[1-9][0-9]*'
     r'|check-runs/[1-9][0-9]*|commits/[0-9a-f]{40}/check-runs'
-    r'|pulls/[1-9][0-9]*(?:/reviews)?'
+    r'|pulls/[1-9][0-9]*(?:/(?:reviews|commits))?'
     r'|git/commits/[0-9a-f]{40}'
     r'|git/ref/(?:heads/main|pull/[1-9][0-9]*/(?:head|merge))'
     r'|branches/main/protection(?:/required_signatures)?'
+    r'|rules/branches/main'
     r'|collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}/permission)'
 )
 
@@ -80,18 +81,24 @@ class ProofAPI:
         self._redirect_handler = NoRedirect()
         self._opener = build_opener(self._redirect_handler)
 
-    def get(self, resource, *, page=None, per_page=100):
+    def get(self, resource, *, page=None, per_page=100, check_filter=None):
         """Read an allowlisted endpoint; list pagination is explicit, never automatic."""
         require(type(resource) is str and len(resource) <= 512 and RESOURCES.fullmatch(resource),
                 'unexpected GitHub evidence endpoint')
         require(type(per_page) is int and 1 <= per_page <= 100, 'invalid page size')
         require(page is None or (type(page) is int and 1 <= page <= 10000), 'invalid page')
+        require(check_filter is None or (type(check_filter) is str and check_filter in {'all', 'latest'}
+                and re.fullmatch(r'commits/[0-9a-f]{40}/check-runs', resource)),
+                'invalid check-run filter')
         require(self._remaining > 0, 'GitHub request budget exhausted')
         url = 'https://api.github.com/repos/' + self.repository
         if resource:
             url += '/' + resource
-        if page is not None:
-            url += '?' + urlencode({'page': page, 'per_page': per_page})
+        query = {} if page is None else {'page': page, 'per_page': per_page}
+        if check_filter is not None:
+            query['filter'] = check_filter
+        if query:
+            url += '?' + urlencode(query)
         headers = {'Accept': 'application/vnd.github+json',
                    'X-GitHub-Api-Version': '2022-11-28',
                    'User-Agent': 'plasma-fusion-kwin-finalizer'}

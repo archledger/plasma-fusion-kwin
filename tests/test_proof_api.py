@@ -58,6 +58,23 @@ class ProofAPITest(unittest.TestCase):
         self.assertEqual(request.full_url, 'https://api.github.com/repos/owner/downstream')
         self.assertIsNone(request.get_header('Authorization'))
 
+    def test_all_check_history_filter_is_explicit(self):
+        self.api.get('commits/' + 'a' * 40 + '/check-runs', page=1, check_filter='all')
+        self.assertTrue(self.opener.calls[0][0].full_url.endswith('?page=1&per_page=100&filter=all'))
+
+    def test_filter_cannot_be_attached_to_unrelated_resources(self):
+        for resource, value in [('pulls/7', 'all'),
+                                ('commits/' + 'a' * 40 + '/check-runs', 'invalid'),
+                                ('commits/' + 'a' * 40 + '/check-runs', [])]:
+            with self.subTest(resource=resource), self.assertRaises(ProofReadError):
+                self.api.get(resource, check_filter=value)
+        self.assertEqual(self.opener.calls, [])
+
+    def test_read_only_commit_and_effective_rule_endpoints(self):
+        for resource in ['pulls/7/commits', 'rules/branches/main']:
+            self.opener.response = Response(b'[]')
+            self.assertEqual(self.api.get(resource), [])
+
     def test_page_parameters_are_numeric_and_bounded(self):
         self.api.get('pulls/7/reviews', page=2, per_page=10)
         self.assertTrue(self.opener.calls[0][0].full_url.endswith('?page=2&per_page=10'))

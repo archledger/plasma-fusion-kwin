@@ -94,6 +94,8 @@ class QualifiedEvidence:
     signed_merge: SignedMerge
     producer_attestation: ProducerAttestedInputs
     tests: dict
+    check_run_id: int
+    run_number: int
 
 
 def require(condition, message):
@@ -345,7 +347,8 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
                                           admission['merge'], admission['payload_sha256'], inputs['tree'],
                                           inputs['sha256'], inputs['bytes'], admission['approver_id'],
                                           admission['upstream_commit'])
-        return QualifiedEvidence(receipt['qualification_id'], run_id, signed, admitted, tests)
+        return QualifiedEvidence(receipt['qualification_id'], run_id, signed, admitted, tests,
+                                 evidence['check_run_id'], execution['run_number'])
     except QualificationError:
         raise
     except (ValueError, KeyError, TypeError, IndexError, AttributeError, zipfile.BadZipFile,

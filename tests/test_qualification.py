@@ -224,6 +224,7 @@ class QualificationTest(unittest.TestCase):
         result = self.verify()
         self.assertEqual(result.qualification_id, self.receipt['qualification_id'])
         self.assertEqual(result.run_id, 500)
+        self.assertEqual((result.check_run_id, result.run_number), (800, 12))
         self.assertEqual(result.tests['qt_test_passed'], 43)
         self.assertEqual(result.signed_merge, self.signed)
         self.assertEqual(result.producer_attestation.pr_number, 7)

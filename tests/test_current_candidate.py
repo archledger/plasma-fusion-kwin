@@ -33,7 +33,8 @@ class CurrentCandidateTest(unittest.TestCase):
         signed = SignedMerge('d' * 40, 'e' * 40, 'A' * 40, 'b' * 40, 'c' * 40)
         attested = ProducerAttestedInputs(7, 101, 'f' * 40, '1' * 64, '2' * 40,
                                           '3' * 64, 4096, 10, self.policy.upstream_commit)
-        self.evidence = QualifiedEvidence('4' * 64, 500, signed, attested, {'qt_test_passed': 43})
+        self.evidence = QualifiedEvidence('4' * 64, 500, signed, attested, {'qt_test_passed': 43},
+                                          check_run_id=800, run_number=12)
         self.api = API({
             'pulls/7': {'number': 7, 'state': 'open', 'merged': False, 'draft': False,
                         'mergeable': True, 'merge_commit_sha': 'f' * 40,
