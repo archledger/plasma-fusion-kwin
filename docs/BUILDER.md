@@ -56,3 +56,31 @@ are not published as end-user packages.
 No native workflow may treat a missing dependency, renderer failure, absent test or skip as
 success. Until qualification is recorded, this remains a candidate builder and the native gate
 in SPEC.md stays open.
+
+## Published candidate and qualification result
+
+The dependency image was published from signed tag `ci-builder-20261030.1` at
+`864718f2ebc52ef65c2f39c18f5b2037f55f459d`:
+
+```text
+ghcr.io/archledger/plasma-fusion-kwin-builder@sha256:4ea17e89d08d6d921e50cb2dabc3011a7061b3cfd1a2b22b026ce8842d0042eb
+```
+
+The [publication workflow](https://github.com/archledger/plasma-fusion-kwin/actions/runs/40988574921)
+passed. Anonymous manifest retrieval and a full pull passed; the downloaded Linux amd64 image
+runs as `builder`, and its actual 882-package inventory matches the lock.
+
+The first native probe configured and compiled all three targets from the pinned patched source.
+It did **not** pass the renderer gate:
+
+| Suite | Result |
+| --- | --- |
+| InternalWindow | 18 QtTest entries passed; no failures or skips. |
+| TabBox | 10 QtTest entries passed; no failures or skips. |
+| OffscreenQuickView | Setup failed: QPainter selected instead of required OpenGL. |
+
+The probe exposed no DRM devices. This KWin virtual backend only advertises OpenGL after opening
+a DRM render device; setting llvmpipe environment variables did not satisfy that requirement.
+The opacity/composition regression cases therefore did not execute. The image remains a
+published dependency candidate, **not a qualified native CI environment**. No test was disabled,
+and no host device access or additional KWin patch was introduced to bypass this failure.
