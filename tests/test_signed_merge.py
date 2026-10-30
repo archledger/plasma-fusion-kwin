@@ -80,6 +80,7 @@ class SignedMergeTest(unittest.TestCase):
         self.assertEqual(verified.commit, self.merge)
         self.assertEqual(verified.fingerprint, self.fingerprints[0])
         self.assertEqual(verified.tree, self.tree)
+        self.assertEqual((verified.base, verified.head), (self.base, self.head))
 
     def test_another_valid_signer_is_rejected(self):
         with self.assertRaises(SignatureError):

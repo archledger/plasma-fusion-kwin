@@ -26,6 +26,8 @@ class SignedMerge:
     commit: str
     tree: str
     fingerprint: str
+    base: str
+    head: str
 
 
 def require(condition, message):
@@ -99,4 +101,4 @@ def verify_signed_merge(source, target, *, keyring, fingerprint, signoff):
             raise SignatureError('signature verification did not complete') from error
     require(result.returncode == 0, 'signature verification failed')
     primary = signature_fingerprint(result.stderr, fingerprint)
-    return SignedMerge(target.commit, target.tree, primary)
+    return SignedMerge(target.commit, target.tree, primary, target.base, target.head)
