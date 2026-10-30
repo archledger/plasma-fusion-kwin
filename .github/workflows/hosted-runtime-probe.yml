@@ -1,0 +1,41 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Hosted native prerequisites
+
+on:
+  push:
+    branches: ['ci/hosted-runtime-probe']
+    paths:
+      - '.github/workflows/hosted-runtime-probe.yml'
+      - 'tools/probe_hosted_runtime.py'
+      - 'tests/test_hosted_runtime.py'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'archledger/plasma-fusion-kwin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test the capability classifier
+        run: python3 -m unittest discover -s tests -p test_hosted_runtime.py -v
+
+      - name: Inspect hosted runner without changing it
+        run: >-
+          python3 tools/probe_hosted_runtime.py
+          --output "${{ runner.temp }}/hosted-native-prerequisites.json"
+
+      - name: Retain capability evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hosted-native-prerequisites
+          path: ${{ runner.temp }}/hosted-native-prerequisites.json
+          if-no-files-found: error
+          retention-days: 14
