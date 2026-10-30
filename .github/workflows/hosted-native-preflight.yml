@@ -1,10 +1,10 @@
 # SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
 # SPDX-License-Identifier: GPL-2.0-or-later
-name: Hosted native guest qualification
+name: Unpatched implementation sensitivity control
 
 on:
   push:
-    branches: ['ci/hosted-native-qualification']
+    branches: ['ci/unpatched-control']
     paths:
       - '.github/**'
       - 'ci/**'

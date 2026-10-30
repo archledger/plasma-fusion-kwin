@@ -1,23 +1,6 @@
-From af822fbb8663f42e360bfa59a333bce3781b9a8e Mon Sep 17 00:00:00 2001
-From: Wisbendji Fimerlus <archledger236@gmail.com>
-Date: Thu, 29 Oct 2026 11:17:07 -0400
-Subject: [PATCH] effect: Apply offscreen view opacity to its scene item
-
-Offscreen Quick windows have no platform window, so their opacity does
-not reach the compositor through Qt. Forward opacity explicitly to the
-scene item and exclude translucent view content from opaque regions.
-
-Cover opacity changes, repainting, background damage, and EffectFrame
-opacity with a native regression test.
-
-Signed-off-by: Wisbendji Fimerlus <archledger236@gmail.com>
----
- autotests/integration/CMakeLists.txt          |   2 +
- .../integration/offscreenquickview_test.cpp   | 305 ++++++++++++++++++
- src/effect/offscreenquickview.cpp             |   3 +-
- 3 files changed, 309 insertions(+), 1 deletion(-)
- create mode 100644 autotests/integration/offscreenquickview_test.cpp
-
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Test-only negative control derived from the opacity patch; implementation unchanged.
 diff --git a/autotests/integration/CMakeLists.txt b/autotests/integration/CMakeLists.txt
 index ac776a40b8..a6db79e86b 100644
 --- a/autotests/integration/CMakeLists.txt
@@ -342,24 +325,3 @@ index 0000000000..9908bd300a
 +
 +WAYLANDTEST_MAIN(KWin::OffscreenQuickViewTest)
 +#include "offscreenquickview_test.moc"
-diff --git a/src/effect/offscreenquickview.cpp b/src/effect/offscreenquickview.cpp
-index 7852409cde..c027fe1248 100644
---- a/src/effect/offscreenquickview.cpp
-+++ b/src/effect/offscreenquickview.cpp
-@@ -131,7 +131,7 @@ public:
-     }
-     RegionF opaque() const override
-     {
--        return hasAlphaChannel() ? RegionF{} : rect();
-+        return hasAlphaChannel() || opacity() != 1.0 ? RegionF{} : rect();
-     }
-     void setScanoutHint(DrmDevice *device, const FormatModifierMap &drmFormats) override
-     {
-@@ -535,6 +535,7 @@ Rect OffscreenQuickView::geometry() const
- void OffscreenQuickView::setOpacity(qreal opacity)
- {
-     d->m_view->setOpacity(opacity);
-+    d->m_item->setOpacity(d->m_view->opacity());
- }
- 
- qreal OffscreenQuickView::opacity() const
