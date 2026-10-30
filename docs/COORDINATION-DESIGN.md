@@ -294,6 +294,28 @@ is involved. The helper does not authenticate a requester, check the latest ref,
 authorize a transition or launch anything. Those remain caller obligations and
 separate production gates.
 
+### Live no-op worker integration
+
+`live-worker-probe.yml` runs one foreground worker on a validation branch. It
+publishes a request while still running, verifies the signed grant, generates
+and publishes its claim, then verifies the signed running state. The existing
+one-shot guard accepts that state once; accepting the earlier, still-unclaimed
+grant and accepting the running claim a second time must both fail.
+The final acknowledgement records those results and `native_executed: false`.
+The coordinator requires the successful terminal run before releasing the lock.
+
+The worker reuses the pinned `actions/upload-artifact` entrypoint rather than
+implementing another artifact protocol. A small local JavaScript action supplies
+the normal artifact runtime environment while keeping one Python invocation
+alive. The workflow retains `contents: read`, never accesses the reporting
+environment and never receives a signing key. It downloads only the existing
+public verification key, pinned by SHA-256 and fingerprint, into a temporary
+keyring. The worker wait is deadline-bounded; failure leaves coordination held.
+
+Active request/claim verification is separate from the original completed-only
+request verifier. Neither is production admission. This integration still does
+not qualify native execution, cutover, general recovery or branch protection.
+
 ### Acceptance cases
 
 - Race two acquisitions of one idle record through real Git receive-pack.

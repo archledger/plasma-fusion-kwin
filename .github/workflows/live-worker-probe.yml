@@ -1,0 +1,66 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Live no-op worker claim
+on:
+  push:
+    branches: ['validation/native-worker-*']
+  workflow_dispatch:
+    inputs:
+      coordination_sha:
+        description: Signed validation dispatching commit
+        required: true
+        type: string
+      parent_sha:
+        description: Expected reserved parent
+        required: true
+        type: string
+      epoch:
+        description: Validation epoch
+        required: true
+        type: string
+      cutover_digest:
+        description: Validation-only cutover digest
+        required: true
+        type: string
+      state_ref:
+        description: Validation-only coordination ref
+        required: true
+        type: string
+      operation_json:
+        description: Public fixture operation
+        required: true
+        type: string
+permissions:
+  contents: read
+jobs:
+  worker:
+    name: live-worker
+    if: github.repository == 'archledger/plasma-fusion-kwin' && startsWith(github.ref, 'refs/heads/validation/native-worker-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Register validation workflow
+        if: github.event_name == 'push'
+        run: echo 'Registered; no worker claim requested.'
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'workflow_dispatch'
+        with:
+          repository: actions/upload-artifact
+          ref: cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          path: _probe-uploader
+          persist-credentials: false
+      - name: Claim and acknowledge without native execution
+        if: github.event_name == 'workflow_dispatch'
+        uses: ./.github/actions/live-worker
+        env:
+          COORDINATION_SHA: ${{ inputs.coordination_sha }}
+          PARENT_SHA: ${{ inputs.parent_sha }}
+          EPOCH: ${{ inputs.epoch }}
+          CUTOVER_DIGEST: ${{ inputs.cutover_digest }}
+          STATE_REF: ${{ inputs.state_ref }}
+          OPERATION_JSON: ${{ inputs.operation_json }}
