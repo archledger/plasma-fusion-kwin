@@ -1,0 +1,31 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: CC-BY-SA-4.0
+name: Controlled status issuer
+
+on:
+  push:
+    branches: ['validation/native-status-issuer']
+    paths: ['.github/workflows/status-issuer-probe.yml']
+
+permissions:
+  statuses: write
+
+jobs:
+  issue:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Publish only the controlled test status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TEST_SHA: 6c548b86ad3ba4133b662a284849fd06f172d10e
+          TEST_STATE: pending
+          TEST_CONTEXT: Native KWin / trusted
+        run: |
+          set -euo pipefail
+          [[ "$TEST_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$TEST_STATE" =~ ^(pending|failure|success|error)$ ]]
+          gh api --method POST "repos/archledger/plasma-fusion-kwin/statuses/$TEST_SHA" \
+            -f state="$TEST_STATE" -f context="$TEST_CONTEXT" \
+            -f description='Controlled test status; no native execution' \
+            -f target_url="https://github.com/archledger/plasma-fusion-kwin/actions/runs/$GITHUB_RUN_ID"
