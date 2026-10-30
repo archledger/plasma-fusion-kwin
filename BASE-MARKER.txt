@@ -1,0 +1,3 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: CC-BY-SA-4.0
+Controlled base update for merge-revision freshness testing; never merge to main.
