@@ -8,7 +8,7 @@ remain separate evidence.
 
 ## Inputs and execution
 
-The dedicated `ci/hosted-native-runner` branch runs a renderer preflight before
+The dedicated `ci/hosted-native-qualification` branch runs a renderer preflight before
 the native job. It does not accept arbitrary PR-controlled hypervisor scripts.
 General PR-native CI needs a separate acceptance decision after qualification.
 
