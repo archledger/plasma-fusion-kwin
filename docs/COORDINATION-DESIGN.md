@@ -257,6 +257,27 @@ fetch. Raw reads and signature status follow Git's
 [GIT_NO_LAZY_FETCH](https://git-scm.com/docs/git#Documentation/git.txt-GITNOLAZYFETCH)
 interfaces; the installed Git 2.56.0 manuals were checked during implementation.
 
+### Request-only handoff probe
+
+`.github/workflows/handoff-probe.yml` is restricted to validation branches. Its
+single job emits public request data and exits; it cannot launch native work,
+write refs or access the reporting environment. A push registers the workflow;
+an explicit dispatch produces the request. If GitHub refuses that dispatch,
+stop without changing the default branch or repository settings.
+
+`ci/native/handoff.py:verify_handoff_request()` checks the artifact's authenticated
+digest and run association, exact pinned workflow source/branch, authorized
+actor, attempt 1, sole completed request job, and signed dispatching-state
+binding. It returns an unconsumed grant proposal without changing the state.
+The caller must supply the previously authenticated state and reviewed emitter
+source. An artifact's job timestamp alone is not uploader authentication.
+
+The experiment signs that proposal on a separate validation ref and reads it
+back with the signed-state reader. It tests request-to-grant binding, not a
+native worker receiving or consuming a grant. A validation-branch result is not
+production admission. The existing main-only qualification verifier remains
+unchanged; live workers, cutover and runtime quiescence still need qualification.
+
 ### Acceptance cases
 
 - Race two acquisitions of one idle record through real Git receive-pack.
