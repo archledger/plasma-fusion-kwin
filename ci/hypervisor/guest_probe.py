@@ -8,6 +8,12 @@ import subprocess
 from pathlib import Path
 
 
+def write_receipt(output, nonce, result):
+    # A stopped serial getty may have left a prompt without a final newline.
+    output.write('\nPF_BOOT_BEGIN ' + nonce + '\n' + json.dumps(result) +
+                 '\nPF_BOOT_END ' + nonce + '\n')
+
+
 def main():
     nonce = Path('/etc/pf-boot-nonce').read_text().strip()
     result = {'nonce': nonce, 'success': False, 'uid': os.geteuid()}
@@ -27,9 +33,7 @@ def main():
         result['error'] = str(error)[:1000]
     try:
         with Path('/dev/ttyS0').open('w') as output:
-            output.write('PF_BOOT_BEGIN ' + nonce + '\n')
-            output.write(json.dumps(result) + '\n')
-            output.write('PF_BOOT_END ' + nonce + '\n')
+            write_receipt(output, nonce, result)
     finally:
         subprocess.run(['systemctl', 'poweroff'], check=False)
 

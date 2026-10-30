@@ -92,6 +92,13 @@ class HostedBootTest(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(ValueError):
                 validate_volume(volume | {key: value}, self.volume, self.token)
 
+    def test_docker_lowercase_volume_absence_is_recognized(self):
+        result = subprocess.CompletedProcess(['docker', 'volume', 'inspect', 'owned'], 1, '',
+                                             'Error response from daemon: get owned: no such volume')
+        self.assertTrue(probe_hosted_boot.absent(result, 'volume'))
+        result.stderr = 'Cannot connect to the Docker daemon'
+        self.assertFalse(probe_hosted_boot.absent(result, 'volume'))
+
     def test_input_archive_has_only_owned_directory_and_readonly_image(self):
         content = b'test image payload'
         with tempfile.TemporaryDirectory() as directory:
@@ -234,6 +241,7 @@ class HostedBootTest(unittest.TestCase):
         self.assertFalse(report['success'])
         self.assertFalse(report['cleanup_confirmed'])
         self.assertTrue(state['volume'])
+        self.assertEqual(report['volume_remove_error'], 'volume is still in use')
 
     def test_device_metadata_change_prevents_success(self):
         report, _ = self.simulate('metadata')

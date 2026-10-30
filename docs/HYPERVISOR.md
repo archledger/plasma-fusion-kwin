@@ -91,6 +91,17 @@ It runs only for relevant changes on the dedicated `ci/hosted-guest-boot` branch
 not for arbitrary pull requests. Hosted guest boot remains pending. The earlier
 restricted [KVM API probe](HOSTED-RUNTIME-PROBE.md) passed but created no VM.
 
+The [first hosted guest attempt](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41071772300)
+did not qualify. QEMU exited normally and the retained log showed guest shutdown,
+but the receipt parser failed and volume removal was not confirmed. The saved
+serial tail omitted the earlier receipt area, so it did not establish the exact
+framing failure. The original failed report is retained separately.
+
+The corrective probe starts its receipt on a fresh console line and keeps the
+complete bounded serial log on failure. Cleanup recognizes Docker's lowercase
+`no such volume` response and records removal and follow-up inspection results.
+These changes do not relax receipt validation or the isolation requirements.
+
 ## References
 
 - [Docker volumes](https://docs.docker.com/engine/storage/volumes/): managed

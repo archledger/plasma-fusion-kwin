@@ -113,7 +113,7 @@ def stage_image(base, archive):
 
 
 def absent(result, kind):
-    return result.returncode != 0 and ('No such ' + kind) in result.stderr
+    return result.returncode != 0 and ('no such ' + kind) in result.stderr.casefold()
 
 
 def run_probe(base, image, config, directory):
@@ -170,7 +170,7 @@ def run_probe(base, image, config, directory):
                                     stdout=output, stderr=subprocess.PIPE, timeout=BOOT_SECONDS, check=False)
         report['controller_exit'] = result.returncode
         report['controller_error'] = result.stderr[:4000]
-        report['boot'] = json.loads(read_bounded(directory / 'controller.json', 2 * 1024**2))
+        report['boot'] = json.loads(read_bounded(directory / 'controller.json', 16 * 1024**2))
         require(result.returncode == 0, 'boot controller failed')
         validate_boot_report(report['boot'])
         report['success'] = True
@@ -189,13 +189,17 @@ def run_probe(base, image, config, directory):
                     info = json.loads(lookup.stdout)[0]
                     if kind == 'container':
                         owned = owned_container(info, name, token)
-                        call(['rm', '--force', owned], cleanup=True)
+                        removed = call(['rm', '--force', owned], cleanup=True)
                     else:
                         validate_volume(info, volume, token)
-                        call(['volume', 'rm', volume], cleanup=True)
+                        removed = call(['volume', 'rm', volume], cleanup=True)
+                    report[kind + '_remove_exit'] = removed.returncode
+                    report[kind + '_remove_error'] = removed.stderr[:2000]
                     lookup = call(lookup_args, cleanup=True)
                 gone = absent(lookup, 'object') or absent(lookup, kind)
                 report[kind + '_removed'] = gone
+                report[kind + '_cleanup_check_exit'] = lookup.returncode
+                report[kind + '_cleanup_check_error'] = lookup.stderr[:2000]
                 clean = clean and gone
             except (OSError, ValueError, KeyError, TypeError, IndexError, subprocess.SubprocessError) as error:
                 report[kind + '_cleanup_error'] = str(error)[:1000]

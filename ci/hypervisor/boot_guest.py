@@ -144,7 +144,10 @@ def boot(root):
         result['error'] = str(error)[:2000]
         for key, name in [('qemu_log', 'qemu.log'), ('serial_tail', 'serial.log')]:
             try:
-                result[key] = read_bounded(root / name, 1024 * 1024)[-16000:]
+                content = read_bounded(root / name, 1024 * 1024)
+                result[key] = content[-16000:]
+                if name == 'serial.log':
+                    result['serial_log'] = content
             except (OSError, ValueError):
                 pass
     result['finished'] = datetime.now(timezone.utc).isoformat()
