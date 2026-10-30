@@ -53,19 +53,8 @@ def git(source, *arguments, raw=False):
     return result.stdout if raw else result.stdout.strip()
 
 
-def push_exact_merge(source, endpoint, target, *, apply=False):
-    """Update only refs/heads/main from the expected base to the exact merge.
-
-    Source: https://git-scm.com/docs/git-push (--force-with-lease=<ref>:<expect>).
-    A lease by itself allows rewrites: require the actual ordered merge parents
-    first so the only permitted update is a fast-forward from target.base.
-    The default performs Git's dry run. An ambiguous failed push must never be
-    retried blindly; this function does not roll back or change protection rules.
-    """
-    require(type(apply) is bool, 'apply must be an explicit boolean')
-    require(type(endpoint) is str and endpoint and not endpoint.startswith('-')
-            and not any(ord(char) < 32 or ord(char) == 127 for char in endpoint),
-            'invalid trusted endpoint')
+def read_exact_merge(source, target):
+    """Read the bounded raw object only after checking its exact tree and parents."""
     require(type(target) is MergeCommit, 'expected an immutable merge target')
     for value in (target.base, target.head, target.commit, target.tree):
         require(type(value) is str and re.fullmatch(r'[0-9a-f]{40}', value)
@@ -91,6 +80,23 @@ def push_exact_merge(source, endpoint, target, *, apply=False):
             and parents == [f'parent {target.base}', f'parent {target.head}']
             and lines[:3] == trees + parents,
             'qualified tree or ordered merge parents differ')
+    return raw
+
+
+def push_exact_merge(source, endpoint, target, *, apply=False):
+    """Update only refs/heads/main from the expected base to the exact merge.
+
+    Source: https://git-scm.com/docs/git-push (--force-with-lease=<ref>:<expect>).
+    A lease by itself allows rewrites: require the actual ordered merge parents
+    first so the only permitted update is a fast-forward from target.base.
+    The default performs Git's dry run. An ambiguous failed push must never be
+    retried blindly; this function does not roll back or change protection rules.
+    """
+    require(type(apply) is bool, 'apply must be an explicit boolean')
+    require(type(endpoint) is str and endpoint and not endpoint.startswith('-')
+            and not any(ord(char) < 32 or ord(char) == 127 for char in endpoint),
+            'invalid trusted endpoint')
+    read_exact_merge(source, target)
     ref = 'refs/heads/main'
     observed = git(source, 'ls-remote', '--exit-code', '--refs', '--', endpoint, ref)
     require(observed == f'{target.base}\t{ref}', 'remote base changed or is ambiguous')
