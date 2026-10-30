@@ -2,9 +2,32 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Hosted native qualification
 
-Status: implementation and review in progress. No hosted native test result is
-claimed here. The earlier local 43-entry result and hosted boot qualification
-remain separate evidence.
+Status: the trusted-branch qualification passed in
+[run 41079594986](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41079594986)
+at `e7a4ccdc96bbd4a40b967bbd448abbdcd43915d2`. The earlier local result and
+boot-only qualification remain separate evidence. General PR-native CI is not
+enabled by this result.
+
+## Observed result
+
+The renderer job passed, followed by a fresh build and all three native suites:
+
+| Suite | QtTest entries passed | Failed | Skipped | Blacklisted |
+| --- | ---: | ---: | ---: | ---: |
+| InternalWindow | 18 | 0 | 0 | 0 |
+| OffscreenQuickView | 15 | 0 | 0 | 0 |
+| TabBox | 10 | 0 | 0 | 0 |
+| Total | 43 | 0 | 0 | 0 |
+
+Counts include setup and cleanup entries. `testComposition` and `testEffectFrame`
+passed. Actual logs identify Qt 6.11.2 and llvmpipe with LLVM 22.1.8 and Mesa 26.2.5.
+The native job completed in 22 minutes 51 seconds; this is one observed run, not
+a performance guarantee.
+
+The host independently decoded the artifacts, rechecked all 882 dependency pins,
+the source tree/archive bindings, the inner OCI policy and the test results.
+Both jobs confirmed inner-container removal, outer-container and volume removal,
+and unchanged host KVM device metadata. No guest disk or private key was uploaded.
 
 ## Inputs and execution
 
@@ -80,6 +103,26 @@ are allowlisted; symlinks, special files, unknown names and overlarge payloads
 are rejected. Each file is limited to 5 MiB and the decoded set to 16 MiB.
 The host independently recomputes test, image, source, runtime-data and renderer
 checks. Missing evidence or unconfirmed container/volume removal fails the job.
+
+## Archive metadata correction and limits
+
+Both jobs verified patched tree `b33310c0a440ed968f82cd03d94359ad435eaeb1`.
+Their source archives had different hashes: renderer
+`956f47868f7488cf5ddb4dc833206e97c767c2b60fd4311aca3677c0a8f49159`, native
+`24025e2d359dac2f4272c6a2291a6995d88d7d68c19a2bd5cc68cca477cdd2ae`.
+Investigation showed that Git 2.56 interpreted `--mtime=@0` as a current-time
+value rather than the intended Unix epoch. Each job still verified its own
+archive digest before extraction and execution.
+
+The preparer now supplies the explicit ISO epoch and its regression checks every
+archive member's timestamp. This post-qualification metadata correction changes
+no KWin source, patch, assertion or dependency. The recorded native execution
+remains attributed to `e7a4ccd`; it was not repeated for the metadata correction.
+Bit-identical binaries are not claimed.
+
+No fresh unpatched control, repeated-run reliability study, general untrusted-PR
+qualification or physical-GPU test is included. Package support, installation,
+upstream submission and merges remain outside this qualification.
 
 ## References
 

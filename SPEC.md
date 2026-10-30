@@ -2,7 +2,8 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Specification: first pinned patch set and CI
 
-Status: approved for the fast-validator stage. Native workflow acceptance remains gated below.
+Status: fast validation and the builder/renderer feasibility gates have passed in a
+trusted-branch hosted qualification. General PR-native workflow acceptance remains separate.
 This document does not authorize packages or installation.
 
 ## Objective
@@ -189,5 +190,7 @@ package-manager operations, KWin installation, desktop/session modification or d
 ## Open decisions and feasibility gates
 
 - `v6.7.5` is approved as the first historical CI reference.
-- The public builder/dependency pin remains to be verified. Fedora 44 is the preferred first lane;
-  a different environment or a published custom image requires a stated decision, not an assumption.
+- The published Fedora 44 builder and its 882-package inventory were verified. The trusted
+  hosted guest passed the required native suites; see [qualification evidence](docs/NATIVE-GUEST.md).
+- General PR-native execution needs a separate trust-boundary review. Physical GPU support,
+  distribution compatibility, packages and installation remain outside this qualification.

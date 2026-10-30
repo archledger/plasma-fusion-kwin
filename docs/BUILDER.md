@@ -84,3 +84,9 @@ a DRM render device; setting llvmpipe environment variables did not satisfy that
 The opacity/composition regression cases therefore did not execute. The image remains a
 published dependency candidate, **not a qualified native CI environment**. No test was disabled,
 and no host device access or additional KWin patch was introduced to bypass this failure.
+
+The later [hosted native guest qualification](NATIVE-GUEST.md) passed all three
+suites with the same pinned builder, a guest-only vgem device and software
+rendering. The failed device-free result above is retained as historical evidence.
+This does not turn the builder into an end-user package or enable arbitrary
+pull-request workloads.
