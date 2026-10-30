@@ -155,25 +155,13 @@ def read_archive(archive, artifact, limits):
     return values
 
 
-def validate_receipt(receipt, policy, signed):
-    keys(receipt, ['identity', 'qualification_id', 'evidence'])
-    identity, evidence = receipt['identity'], receipt['evidence']
-    keys(identity, ['schema_version', 'admission', 'execution'])
-    require(type(identity['schema_version']) is int and identity['schema_version'] == 1,
-            'unsupported qualification schema')
-    admission, execution = identity['admission'], identity['execution']
+def validate_admission(admission):
+    """Validate the shared immutable admission shape without granting authority."""
     keys(admission, ['repository_id', 'pr_number', 'head_repository_id', 'base', 'head',
                      'merge', 'signed_merge', 'tree', 'payload_sha256', 'source', 'approver_id',
                      'upstream_commit'])
-    keys(execution, ['workflow_id', 'run_id', 'run_attempt', 'run_number', 'launcher', 'nonce'])
-    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id', 'reporter_job_id',
-                    'admission_artifact_id', 'check_run_id', 'input_manifest_sha256'])
     for field in ['repository_id', 'pr_number', 'head_repository_id', 'approver_id']:
         identifier(admission[field])
-    for field in ['workflow_id', 'run_id', 'run_attempt', 'run_number']:
-        identifier(execution[field])
-    digest(execution['launcher'])
-    digest(execution['nonce'], 32)
     for field in ['base', 'head', 'merge', 'signed_merge', 'tree', 'upstream_commit']:
         digest(admission[field])
     digest(admission['payload_sha256'], 64)
@@ -181,6 +169,23 @@ def validate_receipt(receipt, policy, signed):
     digest(admission['source']['tree'])
     digest(admission['source']['sha256'], 64)
     require(identifier(admission['source']['bytes']) <= 128 * 1024**2, 'source archive too large')
+
+
+def validate_receipt(receipt, policy, signed):
+    keys(receipt, ['identity', 'qualification_id', 'evidence'])
+    identity, evidence = receipt['identity'], receipt['evidence']
+    keys(identity, ['schema_version', 'admission', 'execution'])
+    require(type(identity['schema_version']) is int and identity['schema_version'] == 1,
+            'unsupported qualification schema')
+    admission, execution = identity['admission'], identity['execution']
+    validate_admission(admission)
+    keys(execution, ['workflow_id', 'run_id', 'run_attempt', 'run_number', 'launcher', 'nonce'])
+    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id', 'reporter_job_id',
+                    'admission_artifact_id', 'check_run_id', 'input_manifest_sha256'])
+    for field in ['workflow_id', 'run_id', 'run_attempt', 'run_number']:
+        identifier(execution[field])
+    digest(execution['launcher'])
+    digest(execution['nonce'], 32)
     for field in ['prepare_job_id', 'admission_job_id', 'native_job_id', 'reporter_job_id',
                   'admission_artifact_id', 'check_run_id']:
         identifier(evidence[field])
