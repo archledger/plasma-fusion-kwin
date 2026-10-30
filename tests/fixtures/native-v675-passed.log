@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: CC0-1.0
+# Normalized case records from the earlier local run; not fresh hosted evidence.
+********* Start testing of KWin::InternalWindowTest *********
+PASS   : KWin::InternalWindowTest::initTestCase()
+PASS   : KWin::InternalWindowTest::testGeometry()
+PASS   : KWin::InternalWindowTest::testEnterLeave()
+PASS   : KWin::InternalWindowTest::testPointerPressRelease()
+PASS   : KWin::InternalWindowTest::testPointerAxis()
+PASS   : KWin::InternalWindowTest::testTouch()
+PASS   : KWin::InternalWindowTest::testOpacity()
+PASS   : KWin::InternalWindowTest::testMove()
+PASS   : KWin::InternalWindowTest::testSkipCloseAnimation(set)
+PASS   : KWin::InternalWindowTest::testSkipCloseAnimation(not set)
+PASS   : KWin::InternalWindowTest::testModifierClickUnrestrictedMove()
+PASS   : KWin::InternalWindowTest::testModifierScroll()
+PASS   : KWin::InternalWindowTest::testPopup()
+PASS   : KWin::InternalWindowTest::testScale()
+PASS   : KWin::InternalWindowTest::testEffectWindow()
+PASS   : KWin::InternalWindowTest::testReentrantMoveResize()
+PASS   : KWin::InternalWindowTest::testDismissPopup()
+PASS   : KWin::InternalWindowTest::cleanupTestCase()
+Totals: 18 passed, 0 failed, 0 skipped, 0 blacklisted
+********* Finished testing of KWin::InternalWindowTest *********
+********* Start testing of KWin::OffscreenQuickViewTest *********
+PASS   : KWin::OffscreenQuickViewTest::initTestCase()
+PASS   : KWin::OffscreenQuickViewTest::testOpacity(zero)
+PASS   : KWin::OffscreenQuickViewTest::testOpacity(fractional)
+PASS   : KWin::OffscreenQuickViewTest::testOpacity(opaque)
+PASS   : KWin::OffscreenQuickViewTest::testResynchronizeOpacity()
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(zero)
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(fractional)
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(opaque)
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(alpha-zero)
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(alpha-fractional)
+PASS   : KWin::OffscreenQuickViewTest::testOpaqueRegion(alpha-opaque)
+PASS   : KWin::OffscreenQuickViewTest::testRepaint()
+PASS   : KWin::OffscreenQuickViewTest::testComposition()
+PASS   : KWin::OffscreenQuickViewTest::testEffectFrame()
+PASS   : KWin::OffscreenQuickViewTest::cleanupTestCase()
+QDEBUG : KWin::OffscreenQuickViewTest::testOpacity(zero) qt.rhi.general: OpenGL VENDOR: Mesa RENDERER: llvmpipe (LLVM 22.1.8, 256 bits) VERSION: 4.6 (Core Profile) Mesa 26.2.5
+Totals: 15 passed, 0 failed, 0 skipped, 0 blacklisted
+********* Finished testing of KWin::OffscreenQuickViewTest *********
+********* Start testing of TabBoxTest *********
+PASS   : TabBoxTest::initTestCase()
+PASS   : TabBoxTest::testMoveForward()
+PASS   : TabBoxTest::testMoveBackward()
+PASS   : TabBoxTest::testReleaseActivationModifierWithOtherModifierHeld()
+PASS   : TabBoxTest::testEscapeReleasesGrab()
+PASS   : TabBoxTest::testClickOutsideReleasesGrab()
+PASS   : TabBoxTest::testCapsLock()
+PASS   : TabBoxTest::testKeyboardFocus()
+PASS   : TabBoxTest::testActiveClientOutsideModel()
+PASS   : TabBoxTest::cleanupTestCase()
+Totals: 10 passed, 0 failed, 0 skipped, 0 blacklisted
+********* Finished testing of TabBoxTest *********
