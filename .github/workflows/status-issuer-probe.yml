@@ -19,7 +19,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           TEST_SHA: 6c548b86ad3ba4133b662a284849fd06f172d10e
-          TEST_STATE: pending
+          TEST_STATE: failure
           TEST_CONTEXT: Native KWin / trusted
         run: |
           set -euo pipefail
