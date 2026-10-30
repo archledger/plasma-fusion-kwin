@@ -90,6 +90,7 @@ class NativeInputsTest(unittest.TestCase):
         native_inputs.archive_tree(source, tree, archive)
         with tarfile.open(archive) as tar, tar.extractfile('input.txt') as file:
             self.assertEqual(file.read(), b'patched')
+            self.assertTrue(all(member.mtime == 0 for member in tar.getmembers()))
         with self.assertRaises(ValueError):
             native_inputs.archive_tree(source, '0' * 40, self.root / 'wrong.tar')
         self.assertEqual(external_index.read_bytes(), b'leave this unrelated index untouched')
