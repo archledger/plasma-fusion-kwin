@@ -1,0 +1,25 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+# Build context is ci/, not the repository or the host filesystem.
+FROM registry.fedoraproject.org/fedora@sha256:351d714a39c16fda7f3d266c0e41b4f34b51e8dfc62f12ae83b8169d7a3c5c64
+COPY builder/install-locked.sh hypervisor/packages.lock /tmp/hypervisor-build/
+RUN FUSION_CI_IMAGE_BUILD=1 /bin/bash /tmp/hypervisor-build/install-locked.sh --install /tmp/hypervisor-build/packages.lock \
+    && install -m 0644 /tmp/hypervisor-build/packages.lock /usr/share/plasma-fusion-kwin-builder/packages.lock \
+    && rm /tmp/hypervisor-build/install-locked.sh /tmp/hypervisor-build/packages.lock \
+    && rmdir /tmp/hypervisor-build \
+    && useradd --uid 1000 --create-home builder \
+    && install -d -o builder -g builder -m 0700 /work
+COPY hypervisor/boot_guest.py hypervisor/guest_probe.py /usr/local/libexec/pf-kwin-hypervisor/
+ENV LANG=C.UTF-8 HOME=/home/builder
+USER builder
+WORKDIR /work
+ENTRYPOINT ["/usr/bin/python3", "-I", "-B", "/usr/local/libexec/pf-kwin-hypervisor/boot_guest.py"]
+CMD ["--help"]
+ARG SOURCE_REVISION=working-tree
+LABEL org.opencontainers.image.source="https://github.com/archledger/plasma-fusion-kwin"
+LABEL org.opencontainers.image.revision="${SOURCE_REVISION}"
+LABEL org.opencontainers.image.title="Plasma Fusion KWin CI hypervisor tools"
+LABEL org.opencontainers.image.description="Pinned QEMU and boot-test tools; no KWin build or installation"
+LABEL org.opencontainers.image.vendor="Plasma Fusion"
+LABEL org.opencontainers.image.url="https://github.com/archledger/plasma-fusion-kwin"
+LABEL org.opencontainers.image.licenses="NOASSERTION"

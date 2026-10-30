@@ -1,0 +1,138 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Publish CI hypervisor image
+
+on:
+  push:
+    tags: ['ci-hypervisor-*']
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    if: github.repository == 'archledger/plasma-fusion-kwin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/archledger/plasma-fusion-kwin-hypervisor
+      TAG: ${{ github.ref_name }}
+      PYTHONDONTWRITEBYTECODE: "1"
+    outputs:
+      image-reference: ${{ steps.publish.outputs.image-reference }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate publishing tag and inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/hypervisor-evidence"
+          [[ "$TAG" =~ ^ci-hypervisor-[0-9]{8}\.[1-9][0-9]*$ ]]
+          [[ "$(git rev-parse HEAD)" == "$GITHUB_SHA" ]]
+          bash ci/builder/install-locked.sh --check ci/hypervisor/packages.lock
+          python3 -m unittest discover -s tests -v 2>&1 |
+            tee "$RUNNER_TEMP/hypervisor-evidence/unit.log"
+
+      - name: Build tools-only image before registry login
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --build-arg SOURCE_REVISION="$GITHUB_SHA" \
+            --tag "$IMAGE:$TAG" --file ci/hypervisor/Containerfile ci 2>&1 |
+            tee "$RUNNER_TEMP/hypervisor-evidence/build.log"
+
+      - name: Verify non-root tools and retain inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$(docker image inspect --format '{{.Config.User}}' "$IMAGE:$TAG")" == builder ]]
+          [[ "$(docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /usr/bin/id "$IMAGE:$TAG" -u)" == 1000 ]]
+          docker run --rm --network none --cap-drop ALL \
+            --security-opt no-new-privileges "$IMAGE:$TAG" --help \
+            > "$RUNNER_TEMP/hypervisor-evidence/controller-help.txt"
+          docker run --rm --network none --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /bin/bash "$IMAGE:$TAG" -ec \
+            'qemu-system-x86_64 --version; qemu-img --version; xorriso --version' \
+            > "$RUNNER_TEMP/hypervisor-evidence/versions.txt" 2>&1
+          container=$(docker create --network none --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /usr/bin/true "$IMAGE:$TAG")
+          trap 'docker rm -f "$container" >/dev/null' EXIT
+          for file in packages.txt packages.sha256 packages.lock package-sources.tsv; do
+            docker cp "$container:/usr/share/plasma-fusion-kwin-builder/$file" \
+              "$RUNNER_TEMP/hypervisor-evidence/$file"
+          done
+
+      - name: Publish approved hypervisor image
+        id: publish
+        shell: bash
+        env:
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$GHCR_TOKEN" |
+            docker login ghcr.io --username "$GITHUB_ACTOR" --password-stdin
+          trap 'docker logout ghcr.io >/dev/null' EXIT
+          docker push "$IMAGE:$TAG" 2>&1 | tee "$RUNNER_TEMP/hypervisor-evidence/push.log"
+          reference=$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE:$TAG")
+          [[ "$reference" =~ ^ghcr\.io/archledger/plasma-fusion-kwin-hypervisor@sha256:[0-9a-f]{64}$ ]]
+          printf '%s\n' "$reference" > "$RUNNER_TEMP/hypervisor-evidence/image-reference.txt"
+          printf 'image-reference=%s\n' "$reference" >> "$GITHUB_OUTPUT"
+
+      - name: Retain metadata only
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hypervisor-publication
+          path: ${{ runner.temp }}/hypervisor-evidence/
+          if-no-files-found: error
+          retention-days: 14
+
+  verify-public:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      IMAGE_REFERENCE: ${{ needs.publish.outputs.image-reference }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Pull anonymously on a fresh runner and verify inventory
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$IMAGE_REFERENCE" =~ ^ghcr\.io/archledger/plasma-fusion-kwin-hypervisor@sha256:[0-9a-f]{64}$ ]]
+          mkdir -p "$RUNNER_TEMP/anonymous-docker" "$RUNNER_TEMP/public-evidence"
+          printf '{"auths":{}}\n' > "$RUNNER_TEMP/anonymous-docker/config.json"
+          export DOCKER_CONFIG="$RUNNER_TEMP/anonymous-docker"
+          docker pull "$IMAGE_REFERENCE" 2>&1 | tee "$RUNNER_TEMP/public-evidence/pull.log"
+          [[ "$(docker image inspect --format '{{index .RepoDigests 0}}' "$IMAGE_REFERENCE")" == "$IMAGE_REFERENCE" ]]
+          [[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$IMAGE_REFERENCE")" == "$GITHUB_SHA" ]]
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges "$IMAGE_REFERENCE" --help \
+            > "$RUNNER_TEMP/public-evidence/help.txt"
+          docker run --rm --network none --read-only --cap-drop ALL \
+            --security-opt no-new-privileges --entrypoint /usr/bin/rpm "$IMAGE_REFERENCE" \
+            -qa --qf '%{NAME}\t%{NAME}-%{EPOCHNUM}:%{VERSION}-%{RELEASE}.%{ARCH}\n' |
+            awk -F '\t' '$1 != "gpg-pubkey" {print $2}' | LC_ALL=C sort \
+            > "$RUNNER_TEMP/public-evidence/packages.txt"
+          grep -v '^#\|^$' ci/hypervisor/packages.lock | LC_ALL=C sort > "$RUNNER_TEMP/expected-packages.txt"
+          diff -u "$RUNNER_TEMP/expected-packages.txt" "$RUNNER_TEMP/public-evidence/packages.txt"
+          printf '%s\n' "$IMAGE_REFERENCE" > "$RUNNER_TEMP/public-evidence/image-reference.txt"
+      - name: Retain anonymous verification evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hypervisor-public-verification
+          path: ${{ runner.temp }}/public-evidence/
+          if-no-files-found: error
+          retention-days: 14
