@@ -56,13 +56,16 @@ or guest package installation. The guest only reports its kernel and the
 availability and checksum of the expected vgem module; it does not load that
 module or run KWin.
 
-The planned hosted launcher must verify the effective Docker configuration
-before starting: read-only root, UID 1000, dropped capabilities, no-new-privileges,
+The hosted launcher checks the effective Docker configuration before starting:
+read-only root, UID 1000, dropped capabilities, no-new-privileges,
 default AppArmor and built-in seccomp, private namespaces, bounded resources,
 and only `/dev/kvm`. Writable storage is one uniquely owned Docker-managed
 volume at `/work`, not a bind mount. Only the declared public image is copied in.
 The launcher must remove its owned container and volume and confirm unchanged
-host device metadata before accepting success.
+host device metadata before accepting success. Its subprocess budget is 720
+seconds, with 90 seconds reserved for cleanup. It refuses to start the controller
+without its full 390-second allowance plus that reserve. Download attempts are
+bounded separately; the 20-minute job leaves time for cleanup and artifact upload.
 
 The only accepted output is bounded metadata and logs. Guest overlays, generated
 keys and cloud-init state must not be uploaded. A successful boot is not proof
@@ -75,8 +78,18 @@ readable SeaBIOS firmware and the default help command were verified. A fresh
 Fedora advisory query reported no pending security updates for this inventory;
 that is not a guarantee that no vulnerabilities exist.
 
-Image publication and hosted guest boot remain pending. The earlier restricted
-[KVM API probe](HOSTED-RUNTIME-PROBE.md) passed but created no VM.
+The [publication workflow](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41071028266)
+built the image and a separate fresh runner pulled it anonymously, checked the
+source revision and matched all 193 installed RPMs. Its immutable reference is:
+
+```text
+ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:f5375da7eecdfd255cd393be237ab5e2c655b87f2d6169a23a5facfe0fb2bc52
+```
+
+`hosted-guest-boot.yml` uses that digest and the matching image configuration ID.
+It runs only for relevant changes on the dedicated `ci/hosted-guest-boot` branch,
+not for arbitrary pull requests. Hosted guest boot remains pending. The earlier
+restricted [KVM API probe](HOSTED-RUNTIME-PROBE.md) passed but created no VM.
 
 ## References
 
