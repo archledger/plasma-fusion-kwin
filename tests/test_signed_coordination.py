@@ -8,12 +8,15 @@ import os
 import shutil
 import subprocess
 import tempfile
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
 from ci.native.coordination import CoordinationError, read_signed_coordination
 from ci.native.qualification import QualificationPolicy
+from ci.native.worker_claim import WorkerClaim, WorkerClaimError
 
 SIGNOFF = 'Signed-off-by: Fixture <fixture@example.invalid>'
 
@@ -184,14 +187,17 @@ class SignedCoordinationTest(unittest.TestCase):
         with self.assertRaises(CoordinationError):
             self.read(self.commit(self.record, self.parent, message='State\n\n' + SIGNOFF + ' \n'))
 
+    def operation(self):
+        return {'id': '1' * 32, 'nonce': '1' * 32, 'holder_fingerprint': self.policy.fingerprint,
+                'workflow_id': 200, 'launcher': self.policy.launcher, 'admission': {
+                    'repository_id': 100, 'pr_number': 7, 'head_repository_id': 101,
+                    'base': '1' * 40, 'head': '2' * 40, 'merge': '3' * 40,
+                    'signed_merge': '4' * 40, 'tree': '5' * 40, 'payload_sha256': '6' * 64,
+                    'source': {'tree': '7' * 40, 'sha256': '8' * 64, 'bytes': 4096},
+                    'approver_id': 10, 'upstream_commit': self.policy.upstream_commit}}
+
     def test_live_record_uses_shared_operation_and_grant_schema(self):
-        operation = {'id': '1' * 32, 'nonce': '1' * 32, 'holder_fingerprint': self.policy.fingerprint,
-                     'workflow_id': 200, 'launcher': self.policy.launcher, 'admission': {
-                         'repository_id': 100, 'pr_number': 7, 'head_repository_id': 101,
-                         'base': '1' * 40, 'head': '2' * 40, 'merge': '3' * 40,
-                         'signed_merge': '4' * 40, 'tree': '5' * 40, 'payload_sha256': '6' * 64,
-                         'source': {'tree': '7' * 40, 'sha256': '8' * 64, 'bytes': 4096},
-                         'approver_id': 10, 'upstream_commit': self.policy.upstream_commit}}
+        operation = self.operation()
         state = dict(self.record, state='reserved', operation=operation, completion=None)
         self.assertEqual(self.read(self.commit(state, self.parent)).record, state)
         invalid = copy.deepcopy(state)
@@ -209,6 +215,137 @@ class SignedCoordinationTest(unittest.TestCase):
         state['grant']['qualification_id'] = '9' * 64
         with self.assertRaises(CoordinationError):
             self.read(self.commit(state, self.parent))
+
+    def worker(self, *, run_id=500, job_id=700):
+        directory = self.source / 'worker'
+        directory.mkdir(mode=0o700, exist_ok=True)
+        return WorkerClaim(directory, self.policy, run_id=run_id, job_id=job_id)
+
+    def granted(self):
+        operation = self.operation()
+        identity = {'schema_version': 1, 'admission': operation['admission'], 'execution': {
+            'workflow_id': 200, 'run_id': 500, 'run_number': 12, 'run_attempt': 1,
+            'launcher': self.policy.launcher, 'nonce': operation['nonce']}}
+        qid = hashlib.sha256(json.dumps(identity, sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+        state = dict(self.record, state='granted', operation=operation, completion=None, grant={
+            'run_id': 500, 'run_number': 12, 'run_attempt': 1, 'qualification_id': qid,
+            'native_job_id': None, 'worker_nonce': None, 'finalizer_nonce': None})
+        return self.commit(state, self.parent), state
+
+    def running(self, worker):
+        parent, state = self.granted()
+        state.update(state='running', generation=2, grant=dict(
+            state['grant'], native_job_id=700, worker_nonce=worker.nonce))
+        commit = self.commit(state, parent)
+        return self.read(commit, expected_parent=parent, expected_generation=2)
+
+    def test_selected_signed_worker_claim_can_be_accepted_only_once(self):
+        worker = self.worker()
+        signed = self.running(worker)
+        self.assertEqual(worker.accept(signed), signed.commit)
+        with self.assertRaises(WorkerClaimError):
+            worker.accept(signed)
+        files = list((self.source / 'worker').iterdir())
+        self.assertEqual(len(files), 1)
+        self.assertEqual(files[0].read_text(), signed.commit + '\n')
+
+    def test_restarted_or_wrong_run_job_cannot_adopt_a_signed_claim(self):
+        worker = self.worker()
+        signed = self.running(worker)
+        for other in [self.worker(), self.worker(run_id=501), self.worker(job_id=701)]:
+            self.assertNotEqual(other.nonce, worker.nonce)
+            with self.assertRaises(WorkerClaimError):
+                other.accept(signed)
+        self.assertEqual(list((self.source / 'worker').iterdir()), [])
+        self.assertEqual(worker.accept(signed), signed.commit)
+
+    def test_run_and_job_are_checked_even_when_nonce_matches(self):
+        for run_id, job_id in [(501, 700), (500, 701)]:
+            worker = self.worker(run_id=run_id, job_id=job_id)
+            signed = self.running(worker)
+            with self.subTest(run_id=run_id, job_id=job_id), self.assertRaises(WorkerClaimError):
+                worker.accept(signed)
+        self.assertEqual(list((self.source / 'worker').iterdir()), [])
+
+    def test_unclaimed_and_finalizing_states_are_not_worker_claims(self):
+        worker = self.worker()
+        parent, _ = self.granted()
+        with self.assertRaises(WorkerClaimError):
+            worker.accept(self.read(parent))
+        running = self.running(worker)
+        record = copy.deepcopy(running.record)
+        record.update(state='finalizing', generation=3)
+        record['grant']['finalizer_nonce'] = '6' * 32
+        finalizing = self.commit(record, running.commit)
+        with self.assertRaises(WorkerClaimError):
+            worker.accept(self.read(finalizing, expected_parent=running.commit, expected_generation=3))
+        self.assertEqual(list((self.source / 'worker').iterdir()), [])
+
+    def test_duplicate_acceptance_calls_have_one_winner(self):
+        worker = self.worker()
+        signed = self.running(worker)
+        barrier = threading.Barrier(2)
+
+        def accept():
+            barrier.wait(timeout=5)
+            try:
+                return worker.accept(signed)
+            except WorkerClaimError:
+                return None
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(lambda _: accept(), range(2)))
+        self.assertCountEqual(results, [signed.commit, None])
+
+    def test_marker_write_failure_does_not_allow_retry(self):
+        for behavior in [{'side_effect': OSError('fixture disk failure')}, {'return_value': 0}]:
+            with self.subTest(behavior=behavior), tempfile.TemporaryDirectory(dir=self.source) as directory:
+                worker = WorkerClaim(directory, self.policy, run_id=500, job_id=700)
+                signed = self.running(worker)
+                with patch('ci.native.worker_claim.os.write', **behavior), self.assertRaises(WorkerClaimError):
+                    worker.accept(signed)
+                with self.assertRaises(WorkerClaimError):
+                    worker.accept(signed)
+                self.assertEqual(len(list(Path(directory).iterdir())), 1)
+
+    def test_group_writable_workspace_is_refused(self):
+        worker = self.worker()
+        signed = self.running(worker)
+        (self.source / 'worker').chmod(0o770)
+        with self.assertRaises(WorkerClaimError):
+            worker.accept(signed)
+        self.assertEqual(list((self.source / 'worker').iterdir()), [])
+
+    def test_signed_cas_picks_one_worker_nonce(self):
+        parent, state = self.granted()
+        workers = [self.worker(), self.worker()]
+        commits = []
+        for worker in workers:
+            running = dict(state, state='running', generation=2, grant=dict(
+                state['grant'], native_job_id=700, worker_nonce=worker.nonce))
+            commits.append(self.commit(running, parent))
+        remote = self.source / 'remote.git'
+        self.git('init', '--bare', '-q', str(remote))
+        ref = 'refs/heads/claim-probe'
+        self.git('push', '-q', str(remote), f'{parent}:{ref}')
+        barrier = threading.Barrier(2)
+
+        def claim(commit):
+            barrier.wait(timeout=5)
+            return subprocess.run(['git', 'push', '--porcelain', f'--force-with-lease={ref}:{parent}',
+                                   str(remote), f'{commit}:{ref}'], cwd=self.source, env=self.env,
+                                  capture_output=True, timeout=30, check=False).returncode
+
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            results = list(pool.map(claim, commits))
+        self.assertEqual(results.count(0), 1)
+        winner = results.index(0)
+        actual = self.git('--git-dir=' + str(remote), 'rev-parse', ref).decode().strip()
+        self.assertEqual(actual, commits[winner])
+        signed = self.read(actual, expected_parent=parent, expected_generation=2)
+        with self.assertRaises(WorkerClaimError):
+            workers[1 - winner].accept(signed)
+        self.assertEqual(workers[winner].accept(signed), actual)
 
     def test_missing_blob_cannot_trigger_a_lazy_fetch(self):
         marker = self.source / 'remote-was-run'

@@ -278,6 +278,22 @@ native worker receiving or consuming a grant. A validation-branch result is not
 production admission. The existing main-only qualification verifier remains
 unchanged; live workers, cutover and runtime quiescence still need qualification.
 
+### Local one-shot worker acceptance
+
+`ci/native/worker_claim.py:WorkerClaim` creates a fresh invocation nonce and
+accepts only a matching, already authenticated `running` snapshot. The run and
+job IDs come from the trusted caller. The nonce cannot be supplied or restored
+through the constructor. Acceptance creates an exclusive marker in a fixed,
+caller-owned private workspace. Callers must not delete that marker to retry
+duplicate calls or failed marker writes.
+
+The local tests race signed successors of one grant through real Git, then check
+that only the selected invocation accepts the result, once. They reuse temporary
+signing keys and the signed-state reader. No live GitHub job identity or workload
+is involved. The helper does not authenticate a requester, check the latest ref,
+authorize a transition or launch anything. Those remain caller obligations and
+separate production gates.
+
 ### Acceptance cases
 
 - Race two acquisitions of one idle record through real Git receive-pack.
