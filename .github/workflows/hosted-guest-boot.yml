@@ -19,8 +19,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
-      HYPERVISOR_IMAGE: ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:f5375da7eecdfd255cd393be237ab5e2c655b87f2d6169a23a5facfe0fb2bc52
-      HYPERVISOR_CONFIG: sha256:d0e328c669bc786dace9b81a290e45a3a5997c7eabad0d298c9b3083ca321839
+      HYPERVISOR_IMAGE: ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:279f86086562a41840b597358c3bc302836e0dd03c627d2e22cc14dded4cab95
+      HYPERVISOR_CONFIG: sha256:0cb5e9e562afc5c68917647681fd88e9d6bc84d01287599cf33f6ee3b8525cbc
       PYTHONDONTWRITEBYTECODE: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

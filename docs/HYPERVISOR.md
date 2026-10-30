@@ -78,12 +78,12 @@ readable SeaBIOS firmware and the default help command were verified. A fresh
 Fedora advisory query reported no pending security updates for this inventory;
 that is not a guarantee that no vulnerabilities exist.
 
-The [publication workflow](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41071028266)
+The [corrected image publication](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41072557061)
 built the image and a separate fresh runner pulled it anonymously, checked the
 source revision and matched all 193 installed RPMs. Its immutable reference is:
 
 ```text
-ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:f5375da7eecdfd255cd393be237ab5e2c655b87f2d6169a23a5facfe0fb2bc52
+ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:279f86086562a41840b597358c3bc302836e0dd03c627d2e22cc14dded4cab95
 ```
 
 `hosted-guest-boot.yml` uses that digest and the matching image configuration ID.
