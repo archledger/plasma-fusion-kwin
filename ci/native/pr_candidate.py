@@ -33,7 +33,11 @@ def sha(value):
 
 @dataclass(frozen=True)
 class Policy:
-    """Trusted configuration, never loaded from the candidate checkout."""
+    """Trusted configuration, never loaded from the candidate checkout.
+
+    The label is a request signal only; it cannot authorize a revision. A caller
+    must separately verify immutable admission before any expensive execution.
+    """
 
     repository_id: int
     repository: str
@@ -69,7 +73,7 @@ def repository_matches(repository, policy):
 
 def bind_candidate(policy, *, run_id, run_attempt, run, pr, base_ref, head_ref,
                    merge_ref, merge_commit):
-    """Accept only one approved, open PR with an exact current two-parent merge.
+    """Observe one opted-in, open PR with an exact current two-parent merge.
 
     API reference: https://docs.github.com/en/rest/actions/workflow-runs
     Git refs/parents: https://docs.github.com/en/rest/git
@@ -99,7 +103,7 @@ def bind_candidate(policy, *, run_id, run_attempt, run, pr, base_ref, head_ref,
         require(pr['mergeable'] is True, 'mergeability is not established')
         labels = pr['labels']
         require(type(labels) is list and any(label['name'] == policy.approval_label
-                                           for label in labels), 'PR is not admitted')
+                                           for label in labels), 'native validation was not requested')
         require(repository_matches(pr['base']['repo'], policy), 'wrong base repository')
         require(pr['base']['ref'] == policy.base_branch, 'wrong base branch')
         base = ref_sha(base_ref, 'refs/heads/' + policy.base_branch)
