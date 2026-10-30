@@ -12,6 +12,7 @@ permissions:
 jobs:
   simulated:
     name: Native KWin / trusted
+    if: ${{ false }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
     steps:
