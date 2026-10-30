@@ -22,10 +22,12 @@ NAMES = frozenset({
     'character-devices.txt', 'registered-tests.json', 'CMakeCache.txt', 'LastTest.log',
     'render-context.txt', 'configure.log', 'build.log', 'ctest.log', 'ctest.xml',
     'native-results.json', 'guest-stage.log', 'collector-status.txt', 'workload-error.txt', 'render-build.log',
-    'runtime-assets.json', 'executables.sha256', 'builder-image.json', 'source.json',
+    'runtime-assets.json', 'executables.sha256', 'builder-image.json', 'builder-oci.json',
+    'builder-container.json', 'source.json',
 })
 METADATA = frozenset({'status', 'mode', 'kernel', 'vgem_sha256', 'drm_node',
-                      'builder_config', 'builder_manifest', 'container_removed', 'error'})
+                      'drm_major', 'drm_minor', 'drm_gid', 'builder_config', 'builder_manifest',
+                      'container_removed', 'error'})
 
 
 def validate(value, nonce):
