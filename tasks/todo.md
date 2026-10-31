@@ -34,11 +34,11 @@ starts unchecked; historical tests and reviews are not completion evidence.
 
 ### FC-01: Shared exact-record validation
 
-- [ ] Add pure expected-identity and visible-conflict validation, without writes.
-- [ ] Reject wrong App/commit/name/ID/QID/URL, conflicting QID/run mappings,
+- [x] Add pure expected-identity and visible-conflict validation, without writes.
+- [x] Reject wrong App/commit/name/ID/QID/URL, conflicting QID/run mappings,
   duplicate IDs and other nonterminal records; retain unrelated terminal history
   as inert observations, never authenticated qualification.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_records.py' -v`.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_records.py' -v`.
 
 Dependencies: none. Scope: two proposed files, `ci/native/check_records.py` and
 `tests/test_check_records.py`. Do not change pagination limits or claim global
