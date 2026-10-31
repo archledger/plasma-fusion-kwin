@@ -98,6 +98,31 @@ class QualifiedEvidence:
     run_number: int
 
 
+@dataclass(frozen=True)
+class CheckBinding:
+    """Validated shape only; the containing artifact needs authentication."""
+    native_check_id: int
+    activation_check_id: int
+
+    def __post_init__(self):
+        identifier(self.native_check_id)
+        identifier(self.activation_check_id)
+        require(self.native_check_id != self.activation_check_id, 'check roles share an ID')
+
+
+@dataclass(frozen=True)
+class QualifiedEvidenceV2(QualifiedEvidence):
+    """Carry v2 bindings; trusted callers must authenticate the whole proof."""
+    activation_check_id: int
+    operation_nonce: str
+    native_job_id: int
+
+    def __post_init__(self):
+        CheckBinding(self.check_run_id, self.activation_check_id)
+        digest(self.operation_nonce, 32)
+        identifier(self.native_job_id)
+
+
 def require(condition, message):
     if not condition:
         raise QualificationError(message)
@@ -171,26 +196,18 @@ def validate_admission(admission):
     require(identifier(admission['source']['bytes']) <= 128 * 1024**2, 'source archive too large')
 
 
-def validate_receipt(receipt, policy, signed):
-    keys(receipt, ['identity', 'qualification_id', 'evidence'])
-    identity, evidence = receipt['identity'], receipt['evidence']
+def _validate_identity(identity, qualification_id, policy, signed):
     keys(identity, ['schema_version', 'admission', 'execution'])
     require(type(identity['schema_version']) is int and identity['schema_version'] == 1,
             'unsupported qualification schema')
     admission, execution = identity['admission'], identity['execution']
     validate_admission(admission)
     keys(execution, ['workflow_id', 'run_id', 'run_attempt', 'run_number', 'launcher', 'nonce'])
-    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id',
-                    'admission_artifact_id', 'check_run_id', 'input_manifest_sha256'])
     for field in ['workflow_id', 'run_id', 'run_attempt', 'run_number']:
         identifier(execution[field])
     digest(execution['launcher'])
     digest(execution['nonce'], 32)
-    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id',
-                  'admission_artifact_id', 'check_run_id']:
-        identifier(evidence[field])
-    digest(evidence['input_manifest_sha256'], 64)
-    require(receipt['qualification_id'] == hashlib.sha256(canonical_json(identity)).hexdigest(),
+    require(qualification_id == hashlib.sha256(canonical_json(identity)).hexdigest(),
             'qualification identity differs')
     require(admission['repository_id'] == policy.repository_id
             and admission['upstream_commit'] == policy.upstream_commit
@@ -201,7 +218,70 @@ def validate_receipt(receipt, policy, signed):
             and (signed.commit, signed.tree, signed.base, signed.head)
             == tuple(admission[field] for field in ['signed_merge', 'tree', 'base', 'head']),
             'admission does not match the verified signed merge')
-    return admission, execution, evidence
+    return admission, execution
+
+
+def _validate_receipt_evidence(evidence, *, version):
+    extra = ['activation_check_run_id'] if version == 2 else []
+    fields = ['prepare_job_id', 'admission_job_id', 'native_job_id',
+              'admission_artifact_id', 'check_run_id', 'input_manifest_sha256']
+    keys(evidence, fields + extra)
+    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id',
+                  'admission_artifact_id', 'check_run_id'] + extra:
+        identifier(evidence[field])
+    digest(evidence['input_manifest_sha256'], 64)
+    if version == 2:
+        return CheckBinding(evidence['check_run_id'], evidence['activation_check_run_id'])
+
+
+def validate_receipt(receipt, policy, signed):
+    """Legacy receipt shape; never a fallback for the explicit v2 validators."""
+    keys(receipt, ['identity', 'qualification_id', 'evidence'])
+    admission, execution = _validate_identity(receipt['identity'], receipt['qualification_id'],
+                                              policy, signed)
+    _validate_receipt_evidence(receipt['evidence'], version=1)
+    return admission, execution, receipt['evidence']
+
+
+def validate_admission_v2(value, policy, signed):
+    """Validate v2 structure, not the emitter, job, artifact or current authority."""
+    try:
+        keys(value, ['schema_version', 'identity', 'qualification_id',
+                     'input_manifest_sha256', 'checks'])
+        require(type(value['schema_version']) is int and value['schema_version'] == 2,
+                'unsupported admission envelope')
+        _validate_identity(value['identity'], value['qualification_id'], policy, signed)
+        digest(value['input_manifest_sha256'], 64)
+        keys(value['checks'], ['native_check_id', 'activation_check_id'])
+        return CheckBinding(**value['checks'])
+    except (KeyError, TypeError, ValueError, RecursionError) as error:
+        raise QualificationError('invalid v2 admission structure') from error
+
+
+def validate_receipt_v2(receipt, policy, signed):
+    """Explicit v2 envelope; preserve the existing identity hash and proof fields."""
+    try:
+        keys(receipt, ['schema_version', 'identity', 'qualification_id', 'evidence'])
+        require(type(receipt['schema_version']) is int and receipt['schema_version'] == 2,
+                'unsupported qualification envelope')
+        admission, execution = _validate_identity(receipt['identity'], receipt['qualification_id'],
+                                                  policy, signed)
+        _validate_receipt_evidence(receipt['evidence'], version=2)
+        return admission, execution, receipt['evidence']
+    except (KeyError, TypeError, ValueError, RecursionError) as error:
+        raise QualificationError('invalid v2 qualification structure') from error
+
+
+def match_admission_v2(admission_record, receipt, policy, signed):
+    """Match two validated structures; callers must authenticate both artifacts."""
+    binding = validate_admission_v2(admission_record, policy, signed)
+    _, _, evidence = validate_receipt_v2(receipt, policy, signed)
+    require(binding == CheckBinding(evidence['check_run_id'], evidence['activation_check_run_id'])
+            and canonical_json(admission_record['identity']) == canonical_json(receipt['identity'])
+            and admission_record['qualification_id'] == receipt['qualification_id']
+            and admission_record['input_manifest_sha256'] == evidence['input_manifest_sha256'],
+            'qualification differs from v2 admission')
+    return binding
 
 
 def verify_run(run, policy, execution):

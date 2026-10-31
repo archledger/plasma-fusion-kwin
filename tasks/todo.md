@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-03 are in progress. See the
+owner on 2026-10-31; FC-01 through FC-03 are complete at checkpoint A. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -58,11 +58,11 @@ a restart/recovery mechanism.
 
 ### FC-03: Strict v2 evidence contracts
 
-- [ ] Validate exact v2 admission/result fields, distinct native/activation IDs,
+- [x] Validate exact v2 admission/result fields, distinct native/activation IDs,
   unchanged identity/QID calculation, and the verified nonce/native job binding.
-- [ ] Reject missing versions, v1/mixed envelopes, extra fields, changed IDs and
+- [x] Reject missing versions, v1/mixed envelopes, extra fields, changed IDs and
   boolean/invalid numeric identifiers. Introduce helpers before switching callers.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_evidence.py' -v`.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_evidence.py' -v`.
 
 Dependencies: none. Scope: `ci/native/qualification.py` and proposed
 `tests/test_check_evidence.py`. Legacy historical helpers must not become a
@@ -70,9 +70,14 @@ fallback for current v2 entry points.
 
 ### Checkpoint A: Foundations
 
-- [ ] FC-01–03 focused tests and full-suite verification recipes pass.
-- [ ] No existing assertion, native case, page/size limit or check was weakened.
-- [ ] Save exact diff/test evidence; none of these helpers authorizes a live run.
+- [x] FC-01–03 focused tests and full-suite verification recipes pass.
+- [x] No existing assertion, native case, page/size limit or check was weakened.
+- [x] Save exact diff/test evidence; none of these helpers authorizes a live run.
+
+Checkpoint A: 456 tests and 11 targeted mutation checks passed, with Ruff,
+compilation, manifest validation and pinned REUSE passing. Independent scoped
+reviews have no remaining required findings. These helpers are not yet wired
+into production; FC-04 is next. Evidence is retained in the shared project handoff.
 
 ### FC-04: Create-only client with an API-only probe
 

@@ -98,6 +98,10 @@ approval of the [specification](../docs/FRESH-CHECK-LIFECYCLE.md).
 Active checklist: [FC-01 through FC-10](todo.md#fresh-check-lifecycle-tasks).
 The completed hosted qualification above is not repeated or reclassified.
 
+Checkpoint A is complete: the three foundations pass 456 tests and 11 targeted
+mutation checks, with scoped review findings resolved. Production integration
+has not started; continue at FC-04 without treating these helpers as a live fix.
+
 ### Objective and boundaries
 
 Replace the invalid completed-check reset with fresh per-operation check IDs,
