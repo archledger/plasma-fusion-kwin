@@ -344,13 +344,49 @@ def verify_native(report, receipt, policy):
     return measured['tests']
 
 
-def verify_qualification(api, policy, signed, *, artifact_id, archive, admission_archive):
-    """Verify a completed historical qualification, not current merge authorization.
+def verify_qualification(
+    api, policy, signed, *, artifact_id, archive, admission_archive
+):
+    """Verify a legacy historical qualification; never a fallback for v2."""
+    return _verify_qualification(
+        api,
+        policy,
+        signed,
+        artifact_id=artifact_id,
+        archive=archive,
+        admission_archive=admission_archive,
+        version=1,
+    )
+
+
+def verify_qualification_v2(
+    api, policy, signed, *, artifact_id, archive, admission_archive
+):
+    """Verify the exact admitted pair and native evidence, not current readiness."""
+    return _verify_qualification(
+        api,
+        policy,
+        signed,
+        artifact_id=artifact_id,
+        archive=archive,
+        admission_archive=admission_archive,
+        version=2,
+    )
+
+
+def _verify_qualification(
+    api, policy, signed, *, artifact_id, archive, admission_archive, version
+):
+    """Share provenance checks without selecting a version from untrusted input.
 
     The caller must run this under a wall-clock deadline and supply SignedMerge
     from verify_signed_merge(), never deserialize it from an untrusted receipt.
     """
     try:
+        require(
+            type(version) is int and version in {1, 2},
+            'unsupported verification version',
+        )
         require(api.repository == policy.repository, 'wrong API repository')
         artifact = api.get('actions/artifacts/' + str(identifier(artifact_id)))
         require(identifier(artifact['id']) == artifact_id and artifact['expired'] is False,
@@ -358,7 +394,8 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
         files = read_archive(archive, artifact,
                              {'qualification.json': MAX_RECEIPT_BYTES, 'report.json': MAX_REPORT_BYTES})
         receipt, report = files['qualification.json'], files['report.json']
-        admission, execution, evidence = validate_receipt(receipt, policy, signed)
+        validate = validate_receipt_v2 if version == 2 else validate_receipt
+        admission, execution, evidence = validate(receipt, policy, signed)
         run_id = execution['run_id']
         association = artifact['workflow_run']
         require(identifier(association['id']) == run_id
@@ -378,11 +415,25 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
                 and approval_association['head_sha'] == policy.launcher, 'wrong admission provenance')
         approval = read_archive(admission_archive, approval_artifact,
                                 {'admission.json': MAX_RECEIPT_BYTES})['admission.json']
-        require(canonical_json(approval) == canonical_json({
-                    'identity': receipt['identity'],
-                    'qualification_id': receipt['qualification_id'],
-                    'input_manifest_sha256': evidence['input_manifest_sha256']}),
-                'worker receipt differs from independently published admission')
+        if version == 2:
+            try:
+                binding = match_admission_v2(approval, receipt, policy, signed)
+            except QualificationError as error:
+                raise QualificationError(
+                    'worker receipt differs from independently published admission'
+                ) from error
+        else:
+            require(
+                canonical_json(approval)
+                == canonical_json(
+                    {
+                        'identity': receipt['identity'],
+                        'qualification_id': receipt['qualification_id'],
+                        'input_manifest_sha256': evidence['input_manifest_sha256'],
+                    }
+                ),
+                'worker receipt differs from independently published admission',
+            )
         run = api.get(f'actions/runs/{run_id}')
         verify_run(run, policy, execution)
         actor = run['actor']
@@ -420,15 +471,49 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
         require(merge['sha'] == admission['merge'] and merge['tree']['sha'] == signed.tree
                 and [parent['sha'] for parent in merge['parents']] == [signed.base, signed.head],
                 'GitHub merge differs from signed candidate')
-        check = api.get('check-runs/' + str(evidence['check_run_id']))
-        require(identifier(check['id']) == evidence['check_run_id']
+        if version == 2:
+            # The record module shares the primitives above; import after initialization.
+            from ci.native.check_records import CheckIdentity, validate_check
+
+            for check_id, head, name in [
+                (binding.native_check_id, signed.commit, policy.check_name),
+                (
+                    binding.activation_check_id,
+                    signed.head,
+                    f'Native KWin / activation #{admission["pr_number"]}',
+                ),
+            ]:
+                check = api.get('check-runs/' + str(check_id))
+                expected = CheckIdentity(
+                    policy.repository,
+                    policy.app_id,
+                    head,
+                    name,
+                    receipt['qualification_id'],
+                    run_id,
+                )
+                validate_check(
+                    check, expected, check_id, status='completed', conclusion='success'
+                )
+                require(
+                    ordered[3][0] <= timestamp(check['completed_at']) <= ordered[3][1],
+                    'App check completion is outside the authenticated report job',
+                )
+        else:
+            check = api.get('check-runs/' + str(evidence['check_run_id']))
+            require(
+                identifier(check['id']) == evidence['check_run_id']
                 and identifier(check['app']['id']) == policy.app_id
-                and check['name'] == policy.check_name and check['head_sha'] == signed.commit
+                and check['name'] == policy.check_name
+                and check['head_sha'] == signed.commit
                 and check['external_id'] == receipt['qualification_id']
-                and check['status'] == 'completed' and check['conclusion'] == 'success'
-                and check['details_url'] == f'https://github.com/{policy.repository}/actions/runs/{run_id}'
+                and check['status'] == 'completed'
+                and check['conclusion'] == 'success'
+                and check['details_url']
+                == f'https://github.com/{policy.repository}/actions/runs/{run_id}'
                 and ordered[3][0] <= timestamp(check['completed_at']) <= ordered[3][1],
-                'native App check does not match qualification')
+                'native App check does not match qualification',
+            )
         tests = verify_native(report, receipt, policy)
         verify_run(api.get(f'actions/runs/{run_id}'), policy, execution)
         inputs = admission['source']
@@ -436,6 +521,19 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
                                           admission['merge'], admission['payload_sha256'], inputs['tree'],
                                           inputs['sha256'], inputs['bytes'], admission['approver_id'],
                                           admission['upstream_commit'])
+        if version == 2:
+            return QualifiedEvidenceV2(
+                receipt['qualification_id'],
+                run_id,
+                signed,
+                admitted,
+                tests,
+                binding.native_check_id,
+                execution['run_number'],
+                binding.activation_check_id,
+                execution['nonce'],
+                evidence['native_job_id'],
+            )
         return QualifiedEvidence(receipt['qualification_id'], run_id, signed, admitted, tests,
                                  evidence['check_run_id'], execution['run_number'])
     except QualificationError:

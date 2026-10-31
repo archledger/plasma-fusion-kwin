@@ -6,12 +6,18 @@ import os
 import subprocess
 import tempfile
 import unittest
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
 from ci.native import coordinator
-from ci.native.qualification import QualificationPolicy
+from ci.native.qualification import (
+    QualificationPolicy,
+    QualifiedEvidence,
+    QualifiedEvidenceV2,
+)
+from ci.native.signed_merge import SignedMerge
 
 
 class CoordinatorTest(unittest.TestCase):
@@ -96,6 +102,13 @@ class CoordinatorTest(unittest.TestCase):
 
     def exercise(self, failure=None):
         policy, admission, anchor = self.fixture()
+        verified_merge = SignedMerge(
+            admission['signed_merge'],
+            admission['tree'],
+            policy.fingerprint,
+            admission['base'],
+            admission['head'],
+        )
         records = {
             anchor['commit']: {
                 'version': 1,
@@ -226,9 +239,39 @@ class CoordinatorTest(unittest.TestCase):
         def evidence(*args, **kwargs):
             if failure == 'qualification':
                 raise ValueError('unverified native cleanup')
-            return SimpleNamespace(
-                qualification_id=records[state['tip']]['grant']['qualification_id']
+            result = QualifiedEvidenceV2(
+                records[state['tip']]['grant']['qualification_id'],
+                500,
+                verified_merge,
+                None,
+                {},
+                800,
+                12,
+                801,
+                records[state['tip']]['operation']['nonce'],
+                702,
             )
+            if failure == 'legacy-evidence':
+                return QualifiedEvidence(
+                    result.qualification_id,
+                    result.run_id,
+                    result.signed_merge,
+                    None,
+                    {},
+                    800,
+                    12,
+                )
+            changes = {
+                'wrong-nonce': {'operation_nonce': '8' * 32},
+                'wrong-native-job': {'native_job_id': 703},
+                'wrong-run': {'run_id': 501},
+                'wrong-run-number': {'run_number': 13},
+                'wrong-qid': {'qualification_id': '9' * 64},
+                'wrong-merge': {
+                    'signed_merge': replace(verified_merge, commit='9' * 40)
+                },
+            }
+            return replace(result, **changes.get(failure, {}))
 
         with (
             tempfile.TemporaryDirectory() as directory,
@@ -237,12 +280,14 @@ class CoordinatorTest(unittest.TestCase):
             patch.object(coordinator.subprocess, 'check_output', side_effect=output),
             patch.object(coordinator.subprocess, 'run', side_effect=run),
             patch.object(coordinator, 'ProofAPI'),
-            patch.object(coordinator, 'verify_signed_merge'),
+            patch.object(
+                coordinator, 'verify_signed_merge', return_value=verified_merge
+            ),
             patch.object(coordinator, 'verify_admission_association'),
             patch.object(coordinator, 'read_signed_coordination', side_effect=signed),
             patch.object(coordinator, 'verify_active_request', side_effect=grant),
             patch.object(coordinator, 'verify_worker_claim', side_effect=running),
-            patch.object(coordinator, 'verify_qualification', side_effect=evidence),
+            patch.object(coordinator, 'verify_qualification_v2', side_effect=evidence),
             patch.object(
                 coordinator,
                 'verify_current_association',
@@ -278,6 +323,9 @@ class CoordinatorTest(unittest.TestCase):
         self.assertEqual(
             records[state['tip']]['completion']['outcome'], 'qualified-only'
         )
+        self.assertIsNone(records[state['tip']]['completion']['main_sha'])
+        self.assertIsNone(records[state['tip']]['operation'])
+        self.assertIsNone(records[state['tip']]['grant'])
 
     def test_unknown_push_never_dispatches_or_releases(self):
         for failure in ['push-timeout', 'readback']:
@@ -307,6 +355,23 @@ class CoordinatorTest(unittest.TestCase):
                     state['pushes'], ['reserved', 'dispatching', 'granted', 'running']
                 )
                 self.assertNotEqual(state['journal']['status'], 'qualified-only')
+
+    def test_v2_execution_bindings_are_required_before_qualified_only_release(self):
+        for failure in [
+            'legacy-evidence',
+            'wrong-nonce',
+            'wrong-native-job',
+            'wrong-run',
+            'wrong-run-number',
+            'wrong-qid',
+            'wrong-merge',
+        ]:
+            with self.subTest(failure=failure):
+                state, result, _ = self.exercise(failure)
+                self.assertIsNone(result)
+                self.assertEqual(
+                    state['pushes'], ['reserved', 'dispatching', 'granted', 'running']
+                )
 
 
 if __name__ == '__main__':

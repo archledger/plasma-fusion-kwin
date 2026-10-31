@@ -12,6 +12,7 @@ import zipfile
 from pathlib import Path
 
 from ci.hypervisor.boot_guest import GUEST_SHA256
+from ci.native import qualification as qualification_module
 from ci.native.controller import native_command
 from ci.native.current_candidate import verify_current_association
 from ci.native.guest import KERNEL, VGEM
@@ -562,6 +563,155 @@ class QualificationTest(unittest.TestCase):
                     'sha256:' + hashlib.sha256(self.archive).hexdigest())
                 with self.assertRaises(QualificationError):
                     self.verify()
+
+
+class QualificationV2Test(QualificationTest):
+    """Run the legacy provenance regressions against the explicit v2 entry point too."""
+
+    def setUp(self):
+        super().setUp()
+        self.receipt['schema_version'] = 2
+        self.receipt['evidence']['activation_check_run_id'] = 801
+        self.admission_changes = {}
+        self.api.responses['check-runs/801'] = dict(
+            self.api.responses['check-runs/800'],
+            id=801,
+            name='Native KWin / activation #7',
+            head_sha=self.signed.head,
+        )
+        self.archive = self.pack()
+
+    def pack(self, *, refresh_id=True):
+        raw = super().pack(refresh_id=refresh_id)
+        if self.receipt.get('schema_version') != 2:
+            return raw
+        if refresh_id:
+            self.api.responses['check-runs/801']['external_id'] = self.receipt[
+                'qualification_id'
+            ]
+        admission = {
+            'schema_version': 2,
+            'identity': self.receipt['identity'],
+            'qualification_id': self.receipt['qualification_id'],
+            'input_manifest_sha256': self.receipt['evidence']['input_manifest_sha256'],
+            'checks': {'native_check_id': 800, 'activation_check_id': 801},
+        }
+        admission.update(self.admission_changes)
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w', compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr('admission.json', json.dumps(admission))
+        self.admission_archive = stream.getvalue()
+        self.api.responses['actions/artifacts/901']['digest'] = (
+            'sha256:' + hashlib.sha256(self.admission_archive).hexdigest()
+        )
+        return raw
+
+    def verify(self):
+        return qualification_module.verify_qualification_v2(
+            self.api,
+            self.policy,
+            self.signed,
+            artifact_id=900,
+            archive=self.archive,
+            admission_archive=self.admission_archive,
+        )
+
+    def test_verified_v2_carries_both_ids_and_execution_binding(self):
+        value = self.verify()
+        self.assertIs(type(value), qualification_module.QualifiedEvidenceV2)
+        self.assertEqual((value.check_run_id, value.activation_check_id), (800, 801))
+        self.assertEqual((value.operation_nonce, value.native_job_id), ('6' * 32, 702))
+
+    def test_admission_comparison_does_not_coerce_true_to_one(self):
+        identity = copy.deepcopy(self.receipt['identity'])
+        identity['execution']['run_attempt'] = True
+        self.admission_changes = {'identity': identity}
+        self.archive = self.pack()
+        with zipfile.ZipFile(io.BytesIO(self.admission_archive)) as archive:
+            value = json.loads(archive.read('admission.json'))
+        self.assertEqual(value['schema_version'], 2)
+        self.assertEqual(
+            value['checks'], {'native_check_id': 800, 'activation_check_id': 801}
+        )
+        self.assertIs(value['identity']['execution']['run_attempt'], True)
+        with self.assertRaisesRegex(
+            QualificationError, 'independently published admission'
+        ):
+            self.verify()
+
+    def test_activation_identity_status_and_report_interval_are_required(self):
+        original = copy.deepcopy(self.api.responses['check-runs/801'])
+        for field, value in [
+            ('id', 802),
+            ('id', True),
+            ('app', {'id': 301}),
+            ('name', 'Native KWin / activation #8'),
+            ('head_sha', self.signed.commit),
+            ('external_id', '7' * 64),
+            ('details_url', 'https://github.com/owner/downstream/actions/runs/501'),
+            ('status', 'in_progress'),
+            ('conclusion', 'failure'),
+            ('completed_at', '2026-10-30T00:29:59Z'),
+            ('completed_at', '2026-10-30T00:31:01Z'),
+        ]:
+            self.api.responses['check-runs/801'] = dict(original, **{field: value})
+            with (
+                self.subTest(field=field, value=value),
+                self.assertRaises(QualificationError),
+            ):
+                self.verify()
+
+    def test_admitted_pair_cannot_be_swapped_replaced_or_shared(self):
+        for pair in [
+            {'native_check_id': 801, 'activation_check_id': 800},
+            {'native_check_id': 800, 'activation_check_id': 802},
+            {'native_check_id': 800, 'activation_check_id': 800},
+        ]:
+            self.admission_changes = {'checks': pair}
+            self.archive = self.pack()
+            with self.subTest(pair=pair), self.assertRaises(QualificationError):
+                self.verify()
+
+    def test_v1_or_missing_outer_version_is_not_a_v2_fallback(self):
+        for version in [None, 1, True]:
+            self.receipt['schema_version'] = version
+            if version is None:
+                del self.receipt['schema_version']
+            self.archive = self.pack()
+            with self.subTest(version=version), self.assertRaises(QualificationError):
+                self.verify()
+
+    def test_completed_legacy_and_v2_entry_points_cannot_substitute_for_each_other(
+        self,
+    ):
+        legacy = QualificationTest()
+        legacy.setUp()
+        with self.assertRaises(QualificationError):
+            qualification_module.verify_qualification_v2(
+                legacy.api,
+                legacy.policy,
+                legacy.signed,
+                artifact_id=900,
+                archive=legacy.archive,
+                admission_archive=legacy.admission_archive,
+            )
+        with self.assertRaises(QualificationError):
+            verify_qualification(
+                self.api,
+                self.policy,
+                self.signed,
+                artifact_id=900,
+                archive=self.archive,
+                admission_archive=self.admission_archive,
+            )
+
+    def test_missing_admitted_activation_id_is_not_discovered_or_replaced(self):
+        self.api.responses['check-runs/802'] = dict(
+            self.api.responses.pop('check-runs/801'), id=802
+        )
+        with self.assertRaises(QualificationError):
+            self.verify()
+        self.assertNotIn('check-runs/802', [path for path, _ in self.api.calls])
 
 
 if __name__ == '__main__':

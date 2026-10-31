@@ -10,6 +10,7 @@ from ci.native.qualification import (
     QualificationError,
     QualificationPolicy,
     QualifiedEvidence,
+    QualifiedEvidenceV2,
 )
 from ci.native.signed_merge import SignedMerge
 
@@ -58,6 +59,27 @@ class CurrentCandidateTest(unittest.TestCase):
         self.assertEqual((result.pr_number, result.head_repository_id), (7, 101))
         self.assertEqual(result.signed_merge, 'd' * 40)
         self.assertEqual(self.api.calls.count('pulls/7'), 2)
+
+    def test_explicit_verified_v2_type_retains_the_same_association_checks(self):
+        self.evidence = QualifiedEvidenceV2(
+            **vars(self.evidence),
+            activation_check_id=801,
+            operation_nonce='6' * 32,
+            native_job_id=702,
+        )
+        self.assertEqual(self.verify().qualification_id, self.evidence.qualification_id)
+        self.api.values['pulls/7']['labels'] = []
+        with self.assertRaises(QualificationError):
+            self.verify()
+
+    def test_unregistered_evidence_subclass_is_not_duck_typed(self):
+        class UnknownEvidence(QualifiedEvidence):
+            pass
+
+        self.evidence = UnknownEvidence(**vars(self.evidence))
+        with self.assertRaises(QualificationError):
+            self.verify()
+        self.assertEqual(self.api.calls, [])
 
     def test_existing_commit_does_not_prove_the_pr_or_fork_association(self):
         self.api.values['pulls/7']['number'] = 8

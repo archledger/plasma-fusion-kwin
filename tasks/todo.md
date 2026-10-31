@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-05 are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-06 and checkpoint B are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -120,11 +120,11 @@ completed qualification and coordinator verification; no live run is authorized.
 
 ### FC-06: Both-check qualification and v2 coordinator
 
-- [ ] Verify both admitted IDs, successful terminal identities, report-job time
+- [x] Verify both admitted IDs, successful terminal identities, report-job time
   bounds and unchanged native/cleanup provenance. Preserve reporter job-ID derivation.
-- [ ] Switch the coordinator's completed-proof path to v2-only bindings; match
+- [x] Switch the coordinator's completed-proof path to v2-only bindings; match
   the issued grant/nonce and retain qualified-only completion with no main write.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_*qualification*.py' -v`,
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_*qualification*.py' -v`,
   `python3 -B -m unittest discover -s tests -p 'test_check_evidence.py' -v` and
   `python3 -B -m unittest discover -s tests -p 'test_coordinator.py' -v`.
 
@@ -132,12 +132,22 @@ Dependencies: FC-03, FC-05. Scope: `ci/native/qualification.py`,
 `ci/native/coordinator.py`, `tests/test_qualification.py`,
 `tests/test_check_evidence.py`, `tests/test_coordinator.py`.
 
+The shared current-association guard also accepts the explicit verified v2
+type, with its existing PR/ref checks unchanged and unregistered subclasses
+still refused. Covered by `tests/test_current_candidate.py`.
+
 ### Checkpoint B: Coherent producer contract
 
-- [ ] FC-04–06 focused tests and full-suite verification recipes pass.
-- [ ] No production caller can use reset, unversioned admission, v1 fallback or
+- [x] FC-04–06 focused tests and full-suite verification recipes pass.
+- [x] No production caller can use reset, unversioned admission, v1 fallback or
   a scan-derived check ID. A failed journal/upload remains a failure.
-- [ ] Review the write/credential boundaries and preserve source evidence.
+- [x] Review the write/credential boundaries and preserve source evidence.
+
+Checkpoint B: 527 tests, eight targeted mutations, Ruff, compilation, manifest
+validation and pinned REUSE pass. Source and focused review follow-up have no
+remaining findings. Legacy historical verification remains explicit, separate
+from the v2 producer/coordinator path. This is source acceptance only; current
+readiness/authority migration continues at FC-07/08 and no live gate is approved.
 
 ### FC-07: Fixed authority read and anchor loading
 
