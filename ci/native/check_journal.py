@@ -132,6 +132,27 @@ class CheckJournal:
                         'cannot remove owned journal staging file'
                     ) from error
 
+    def check_context(self, qualification_id, run_id, phase, role):
+        """Reject a mismatched operation or any attempted/pending role before I/O."""
+        require(not self._failed, 'check journal is unusable after persistence failure')
+        require(
+            (qualification_id, run_id, phase)
+            == (
+                self._value['qualification_id'],
+                self._value['run_id'],
+                self._value['phase'],
+            )
+            and type(run_id) is int,
+            'check journal belongs to another operation or phase',
+        )
+        require(
+            not any(
+                w['status'] == 'pending' or w['role'] == role
+                for w in self._value['writes']
+            ),
+            'check write is pending or already attempted',
+        )
+
     def begin(self, role, action, *, check_id=None):
         require(not self._failed, 'check journal is unusable after persistence failure')
         writes = self._value['writes']

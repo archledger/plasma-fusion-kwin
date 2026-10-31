@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-03 are complete at checkpoint A. See the
+owner on 2026-10-31; FC-01 through FC-04 are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -81,17 +81,23 @@ into production; FC-04 is next. Evidence is retained in the shared project hando
 
 ### FC-04: Create-only client with an API-only probe
 
-- [ ] Wire shared validation/journal into fresh POST and exact-ID completion;
+- [x] Wire shared validation/journal into fresh POST and exact-ID completion;
   remove reset PATCHes, refuse replay and stop after any uncertain write.
-- [ ] Adapt the validation-only probe for one real run/one pair and authenticated
+- [x] Adapt the validation-only probe for one real run/one pair and authenticated
   predecessor evidence. Stable validation contexts survive across actual runs;
   tests do not fabricate live identities or invoke production authority writes.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_check*.py' -v`.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check*.py' -v`.
 
 Dependencies: FC-01–03. Scope: `ci/native/checks.py`, `tests/test_checks.py`,
 `tools/probe_check_lifecycle.py`, `tests/test_check_lifecycle_probe.py`, and
 `.github/workflows/check-lifecycle-probe.yml`. Preserve safe diagnostics and the
 HTTP 422 regression; no workflow dispatch is part of this task.
+
+FC-04: full suite 469 tests, Ruff, compilation, manifest, pinned REUSE and
+Actionlint passed. Scoped source and downloader-delta reviews have no required
+findings. The optional download-buffer bound was implemented and tested. No
+App/native dispatch occurred. Production callers still need FC-05/06 wiring;
+they cannot write checks without the new journal.
 
 ### FC-05: Producer admission and partial-failure binding
 

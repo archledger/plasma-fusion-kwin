@@ -8,6 +8,16 @@ on:
         description: Exact held authority tip; this probe never changes it
         required: true
         type: string
+      stage:
+        description: One actual run in the separately approved A/B/C sequence
+        required: true
+        type: choice
+        options: [A, B, C]
+      predecessor_run:
+        description: Exact successful preceding probe run (empty for A)
+        required: false
+        default: ''
+        type: string
 
 permissions:
   contents: read
@@ -24,10 +34,12 @@ jobs:
         with:
           ref: ${{ github.sha }}
           persist-credentials: false
-      - name: Probe only a disposable check, without native execution
+      - name: Probe one disposable pair, without native execution
         env:
           GH_TOKEN: ${{ github.token }}
           CHECK_COORDINATION_SHA: ${{ inputs.coordination_sha }}
+          CHECK_PROBE_STAGE: ${{ inputs.stage }}
+          CHECK_PREDECESSOR_RUN: ${{ inputs.predecessor_run }}
           NATIVE_GATE_PRIVATE_KEY: ${{ secrets.NATIVE_GATE_PRIVATE_KEY }}
         run: python3 -B -m tools.probe_check_lifecycle
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
@@ -35,5 +47,14 @@ jobs:
         with:
           name: check-lifecycle-${{ github.run_id }}-1
           path: ${{ runner.temp }}/check-lifecycle-probe/report.json
+          if-no-files-found: error
+          retention-days: 14
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: check-lifecycle-journals-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/check-lifecycle-probe/admit-journal.json
+            ${{ runner.temp }}/check-lifecycle-probe/report-journal.json
           if-no-files-found: error
           retention-days: 14
