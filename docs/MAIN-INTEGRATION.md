@@ -114,6 +114,9 @@ two-parent candidate; a label or historical success is not admission.
    on a fresh serialized operation. A retained conclusion, mismatched check,
    ambiguous response or newer operation must stop the test. Any repeat native
    run requires its own approved budget; do not silently retry.
+   The [disposable lifecycle probe](CHECK-LIFECYCLE-PROBE.md) tests reset behavior
+   without a native build. Its installation and dispatch require approval and
+   do not release the held production operation.
 
 With enforcement intentionally off, the full read-only verifier is expected to
 refuse readiness because the required native App/check mapping is absent. This
