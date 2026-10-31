@@ -166,7 +166,8 @@ class CheckReporter:
             and value['external_id'] == qid
             and value['details_url'] == self.details_url
             and value['status'] == status
-            and value['conclusion'] == conclusion,
+            and value['conclusion'] == conclusion
+            and (status == 'completed' or value['completed_at'] is None),
             'check response does not match the operation',
         )
         return identifier(value['id'])
@@ -210,6 +211,9 @@ class CheckReporter:
                 require(
                     matched[0]['head_sha'] == head, 'existing check has wrong commit'
                 )
+                # Omitted fields can retain a previous terminal result. Refuse
+                # the write unless GitHub confirms both fields were cleared.
+                body.update(conclusion=None, completed_at=None)
                 result = self._send(
                     'PATCH', f'check-runs/{identifier(matched[0]["id"])}', body
                 )

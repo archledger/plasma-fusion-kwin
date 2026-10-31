@@ -31,6 +31,7 @@ class ChecksTest(unittest.TestCase):
             'details_url': self.client.details_url,
             'status': 'in_progress',
             'conclusion': None,
+            'completed_at': None,
             'app': {'id': 300},
         }
 
@@ -101,7 +102,7 @@ class ChecksTest(unittest.TestCase):
         self.check['conclusion'] = 'success'
         with (
             patch('ci.native.checks.get_all', return_value=[self.check]),
-            patch.object(self.client, '_send', self.send),
+            patch.object(self.client, '_send', return_value=self.check),
             self.assertRaises(CheckWriteError),
         ):
             self.client.begin('b' * 40, self.policy.check_name, 'c' * 64)
@@ -139,6 +140,46 @@ class ChecksTest(unittest.TestCase):
         with (
             patch('ci.native.checks.get_all', return_value=[old]),
             patch.object(self.client, '_send', return_value=old),
+            self.assertRaises(CheckWriteError),
+        ):
+            self.client.begin('b' * 40, self.policy.check_name, 'c' * 64)
+
+    def test_reopen_explicitly_clears_retained_completion_fields(self):
+        for conclusion in ['failure', 'success']:
+            with self.subTest(conclusion=conclusion):
+                server = dict(
+                    self.check,
+                    status='completed',
+                    conclusion=conclusion,
+                    completed_at='2026-10-31T01:00:00Z',
+                )
+
+                def update(method, resource, body, server=server):
+                    self.assertEqual((method, resource), ('PATCH', 'check-runs/800'))
+                    server.update(body)
+                    # Model the observed retained-conclusion behavior. Explicit
+                    # null clearing remains subject to the live contract probe.
+                    if server['conclusion'] is not None:
+                        server['status'] = 'completed'
+                    return copy.deepcopy(server)
+
+                with (
+                    patch('ci.native.checks.get_all', return_value=[server]),
+                    patch.object(self.client, '_send', side_effect=update),
+                ):
+                    self.assertEqual(
+                        self.client.begin('b' * 40, self.policy.check_name, 'c' * 64),
+                        800,
+                    )
+                self.assertEqual(server['status'], 'in_progress')
+                self.assertIsNone(server['conclusion'])
+                self.assertIsNone(server['completed_at'])
+
+    def test_pending_readback_rejects_a_retained_completion_timestamp(self):
+        response = dict(self.check, completed_at='2026-10-31T01:00:00Z')
+        with (
+            patch('ci.native.checks.get_all', return_value=[response]),
+            patch.object(self.client, '_send', return_value=response),
             self.assertRaises(CheckWriteError),
         ):
             self.client.begin('b' * 40, self.policy.check_name, 'c' * 64)
