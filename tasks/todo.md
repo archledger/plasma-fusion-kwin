@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-08 and checkpoint B are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-09 and checkpoints B/C are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -189,23 +189,33 @@ integrated failure/replay coverage before checkpoint C and final source closeout
 
 ### FC-09: Integrated failure and replay coverage
 
-- [ ] Cover fresh admission through qualification/readiness, old success after
+- [x] Cover fresh admission through qualification/readiness, old success after
   new signed activation, missing v2 evidence, partial create/publication/report
   failure, and changed authority between observations using deterministic fixtures.
-- [ ] Mutation checks must catch removed ID/QID/nonce/version/fence validation,
+- [x] Mutation checks must catch removed ID/QID/nonce/version/fence validation,
   adopted records and ignored partial failure. No live identities are invented.
-- [ ] Verify the full-suite recipes in `plan.md`; save each targeted mutation
+- [x] Verify the full-suite recipes in `plan.md`; save each targeted mutation
   result and do not substitute a previous revision's passing output.
 
 Dependencies: FC-05–08. Scope: `tests/test_producer.py`,
 `tests/test_coordinator.py`, `tests/test_current_policy.py`,
 `tests/test_readiness.py`, `tests/test_check_lifecycle_probe.py`.
 
+The integrated cases and shared fixture are in `tests/test_lifecycle_integration.py`
+and `tests/lifecycle_fixture.py`, rather than expanding the already-large
+per-layer suites. This slice changes no production code.
+
 ### Checkpoint C: Current authority and regressions
 
-- [ ] FC-07–09 focused tests, full suite, lint, compile and manifest checks pass.
-- [ ] Fixtures demonstrate the claimed refusal paths, not just helper call counts.
-- [ ] No source test is presented as GitHub/native operational qualification.
+- [x] FC-07–09 focused tests, full suite, lint, compile and manifest checks pass.
+- [x] Fixtures demonstrate the claimed refusal paths, not just helper call counts.
+- [x] No source test is presented as GitHub/native operational qualification.
+
+Checkpoint C: 569 full-suite tests, ten targeted integration mutations, Ruff,
+compilation, manifest validation and pinned REUSE pass. Source and follow-up
+reviews have no remaining findings. Fifteen integrated cases use actual local
+signatures and artifact/producer/readiness validators with simulated API/native
+data; they do not qualify live GitHub behavior or native execution.
 
 ### FC-10: Documentation and source closeout
 
