@@ -23,8 +23,9 @@ The policy must explicitly contain every `QualificationPolicy` field, plus
 Also supply the result artifact ID and both downloaded ZIPs described in
 [the qualification contract](QUALIFICATION-EVIDENCE.md). Both ZIPs are checked
 against authenticated API metadata; a filename or local receipt is not authority.
-The producer of that new artifact format is not implemented yet. Old native
-qualification artifacts are not interchangeable with these proof bundles.
+The manual producer implements this artifact format, but its operational
+qualification remains pending. Old native qualification artifacts are not
+interchangeable with these proof bundles.
 
 Example, after the matching producer and trusted policy exist:
 
@@ -63,3 +64,6 @@ not include raw native logs, policy contents or worker tracebacks.
 Actual finalization remains blocked on serialization against new activation,
 producer/check-transition validation and the remaining live integration tests.
 The exact-base Git update primitive alone does not close the activation race.
+Before enforcement, a valid qualification can still fail full readiness because
+the required native App/check mapping is absent. Record the specific refusal
+without weakening policy checks; see the [integration plan](MAIN-INTEGRATION.md).

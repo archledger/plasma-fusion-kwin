@@ -4,8 +4,10 @@
 
 `ci/native/current_policy.py` combines current PR association, classic branch
 protection, required checks, reviews and activation-pointer observations. It
-returns a `ReadinessSnapshot`, not permission to push. The producer, activation
-writer and finalizer CLI are not implemented or enabled by this module.
+returns a `ReadinessSnapshot`, not permission to push. The separate manual
+producer, fenced activation writer and read-only finalizer CLI are implemented;
+their operational qualification and finalizing main-write integration remain
+pending. This module does not enable them.
 
 ## Supported initial lane
 
@@ -73,11 +75,11 @@ observations but are not a transaction or lock.
 
 ## Unresolved write boundary
 
-An activation writer must authenticate fresh admission, confirm the pending
-pointer transition before starting work, reconcile ambiguous API outcomes, and
-serialize every pointer/native-result transition. It must never let an older
-reporter overwrite newer activation. These behaviors still need implementation
-and bounded API experiments, including completed-check reopening.
+The manual producer and fenced App client implement fresh admission, confirmation
+of the pending pointer before native work, and serialized pointer/result writes.
+They stop on ambiguous outcomes rather than automatically retrying or allowing
+an older reporter to overwrite newer activation. These behaviors still need
+operational qualification, including completed-check reopening.
 
 Finalization must also serialize against activation. A local Git base lease does
 not prevent the pointer changing after its last read. Therefore this read-only

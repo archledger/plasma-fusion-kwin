@@ -81,12 +81,38 @@ It did **not** pass the renderer gate:
 
 The probe exposed no DRM devices. This KWin virtual backend only advertises OpenGL after opening
 a DRM render device; setting llvmpipe environment variables did not satisfy that requirement.
-The opacity/composition regression cases therefore did not execute. The image remains a
-published dependency candidate, **not a qualified native CI environment**. No test was disabled,
-and no host device access or additional KWin patch was introduced to bypass this failure.
+The opacity/composition regression cases therefore did not execute. That device-free run did
+not qualify a native CI environment. No test was disabled, and no host device access or
+additional KWin patch was introduced to bypass this failure.
+
+### Subsequent local guest qualification
+
+On 2026-10-30, a separately authorized KVM guest supplied its own software `vgem` node to the
+unprivileged test container. No physical-host graphics device, shared directory or network
+interface was exposed. The guest used Fedora kernel `6.19.10-300.fc44.x86_64`; the container
+retained the exact public digest and 882-package inventory above.
+
+All three suites passed: InternalWindow 18, OffscreenQuickView 15 and TabBox 10 QtTest entries,
+with zero failures, skips or blacklisted results. The composition and effect-frame regressions
+both executed, and their logs identify `llvmpipe (LLVM 22.1.8, 256 bits)` with Mesa 26.2.5.
+
+Compilation completed once. The first guest test run exposed another setup gap: the historical
+regression copies its QML fixture under `kwin/frames`, but this KWin runtime looks under
+`kwin-wayland/frames`. The test-only rerun staged the three byte-verified source frame QML files
+under a private `share/kwin-wayland/frames/plasma` directory and prepended that share directory
+to `XDG_DATA_DIRS`. This matches the source's runtime installation layout; no source, assertion,
+test executable or installed-host file was changed. Executable hashes were checked before and after
+the rerun. The fixture-path defect remains; the test must not be described as self-contained.
+
+This qualified the recorded **local guest** path, not a device-free container. At that point,
+hosted KVM availability and the guest-only-device isolation contract still needed verification.
+A fresh unpatched control was not run in this local guest. No package support, physical-GPU or
+performance claim follows from these results; stock KWin remains unchanged.
+
+### Subsequent hosted qualification
 
 The later [hosted native guest qualification](NATIVE-GUEST.md) passed all three
 suites with the same pinned builder, a guest-only vgem device and software
-rendering. The failed device-free result above is retained as historical evidence.
-This does not turn the builder into an end-user package or enable arbitrary
-pull-request workloads.
+rendering. The failed device-free result and the local guest result above remain
+separate historical evidence. This does not turn the builder into an end-user
+package or enable arbitrary pull-request workloads.

@@ -3,8 +3,9 @@
 # Fast validation and its limits
 
 This stage validates source identity and patch application. It does not build KWin, qualify a
-renderer, produce packages or alter the installed desktop. The native CI milestone remains open
-until the public builder and software-renderer gates in [SPEC.md](../SPEC.md) have passed.
+renderer, produce packages or alter the installed desktop. The separate trusted-branch guest
+qualification is recorded in [NATIVE-GUEST.md](NATIVE-GUEST.md). Operational qualification of the
+assembled manual producer remains separate; see the [integration plan](MAIN-INTEGRATION.md).
 
 ## Inputs
 
@@ -71,9 +72,9 @@ instead checked by `git apply --whitespace=error-all`; the regression suite cove
 Only validation logs and provenance receipts are uploaded. Their collection cannot convert a
 failed preceding step to success. No installable KWin artifact is created or published.
 
-## Native qualification is still pending
+## Native qualification is separate
 
-The earlier local KWin qualification is historical evidence for this source correction, not a
-native build result from this repository's Actions. The public builder, dependency inventory,
-compatibility and software-renderer tests must still be proved before adding the native workflow.
-Do not interpret a green fast workflow as completed native CI or end-user package support.
+The [recorded hosted guest run](NATIVE-GUEST.md) passed the targeted native suites with the pinned
+builder. It qualifies that source and execution path, not the newly assembled manual producer.
+The producer still requires a real end-to-end run, App lifecycle checks and verified cleanup
+before enforcement. Do not interpret a green fast workflow as native or end-user qualification.

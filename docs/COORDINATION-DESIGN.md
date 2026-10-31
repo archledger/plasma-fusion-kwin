@@ -4,8 +4,11 @@
 
 Status: three design-review cycles completed. The owner approved adding an
 explicit, verified rejection outcome and proceeding to a local-only prototype.
-Implementation and production qualification remain pending. No production ref,
-protection rule, worker grant or write permission is enabled.
+The signed-state reader, local/live validation probes and manual qualification
+producer are now implemented. Production cutover, operational qualification and
+the finalizing main-write integration remain pending; see the
+[integration plan](MAIN-INTEGRATION.md). No production authority ref or native
+merge enforcement is enabled by this design.
 
 ## Contract
 
