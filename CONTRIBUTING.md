@@ -28,8 +28,9 @@ relevant dependency changes.
 - Keep generated packages, build caches, credentials and machine-specific state out of Git.
 - Run `git diff --check` before committing documentation changes.
 
-The initial repository contains no build or test runner. The first patch import must introduce
-its verification procedure and pinned inputs rather than relying on undocumented local commands.
+Run the fast checks described in [docs/VALIDATION.md](docs/VALIDATION.md). Keep source/patch
+validation distinct from native build and runtime results. The public builder and native test
+lane remain subject to the feasibility gates in SPEC.md.
 
 ## Packaging and installation
 

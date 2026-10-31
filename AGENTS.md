@@ -12,7 +12,7 @@ Read README.md, POLICY.md and CONTRIBUTING.md before making changes.
 - Pin and verify upstream inputs. Preserve authorship, licenses and regression evidence.
 - Do not weaken tests or fabricate build, hardware or compatibility results.
 - Keep credentials and generated packages out of Git. Sign commits with the author's DCO only.
-- The initial repository is documentation-only. Scope and review the first patch import,
-  verification workflow, packaging and installer separately. Do not invent released packages.
+- The repository has fast source/patch validation, not a qualified native build or package release.
+  Respect SPEC.md's builder gate; scope packaging and installation separately.
 - Repository creation does not authorize releases, deployments, account changes or installation
   on the current desktop.

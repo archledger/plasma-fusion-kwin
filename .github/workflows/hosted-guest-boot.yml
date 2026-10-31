@@ -1,0 +1,55 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Hosted isolated guest boot
+
+on:
+  push:
+    branches: ['ci/hosted-guest-boot']
+    paths:
+      - '.github/workflows/hosted-guest-boot.yml'
+      - 'tools/probe_hosted_boot.py'
+      - 'tests/test_hosted_boot.py'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    if: github.repository == 'archledger/plasma-fusion-kwin'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      HYPERVISOR_IMAGE: ghcr.io/archledger/plasma-fusion-kwin-hypervisor@sha256:279f86086562a41840b597358c3bc302836e0dd03c627d2e22cc14dded4cab95
+      HYPERVISOR_CONFIG: sha256:0cb5e9e562afc5c68917647681fd88e9d6bc84d01287599cf33f6ee3b8525cbc
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Test launcher refusal and cleanup paths
+        run: python3 -m unittest discover -s tests -p test_hosted_boot.py -v
+
+      - name: Download the pinned public input and boot once
+        shell: bash
+        run: |
+          set -euo pipefail
+          base=$(mktemp "$RUNNER_TEMP/pf-boot-base.XXXXXX.qcow2")
+          trap 'rm -f -- "$base"' EXIT
+          curl --proto '=https' --tlsv1.2 --fail --location --retry 1 \
+            --retry-max-time 120 --max-time 60 --max-filesize 600000000 \
+            --output "$base" \
+            https://paducahix.mm.fcix.net/fedora/linux/releases/44/Cloud/x86_64/images/Fedora-Cloud-Base-Generic-44-1.7.x86_64.qcow2
+          python3 -m tools.probe_hosted_boot --base "$base" \
+            --image "$HYPERVISOR_IMAGE" --image-id "$HYPERVISOR_CONFIG" \
+            --output "$RUNNER_TEMP/hosted-guest-boot.json"
+
+      - name: Retain bounded metadata only
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: hosted-guest-boot
+          path: ${{ runner.temp }}/hosted-guest-boot.json
+          if-no-files-found: error
+          retention-days: 14

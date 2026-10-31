@@ -1,0 +1,65 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Coordination request probe
+
+on:
+  push:
+    branches: ['validation/native-handoff-*']
+  workflow_dispatch:
+    inputs:
+      coordination_sha:
+        description: Exact validation-only dispatching commit
+        required: true
+        type: string
+      operation_json:
+        description: Public fixture operation, never credentials
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  request:
+    name: handoff-request
+    if: github.repository == 'archledger/plasma-fusion-kwin' && startsWith(github.ref, 'refs/heads/validation/native-handoff-')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Register the validation workflow
+        if: github.event_name == 'push'
+        run: echo 'Request-only workflow registered; no grant requested.'
+
+      - name: Emit public request data
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          COORDINATION_SHA: ${{ inputs.coordination_sha }}
+          OPERATION_JSON: ${{ inputs.operation_json }}
+        shell: python
+        run: |
+          import json
+          import os
+          import pathlib
+          import re
+
+          assert os.environ['GITHUB_RUN_ATTEMPT'] == '1'
+          sha = os.environ['COORDINATION_SHA']
+          assert re.fullmatch(r'[0-9a-f]{40}', sha) and sha != '0' * 40
+          operation = json.loads(os.environ['OPERATION_JSON'])
+          identity = {'schema_version': 1, 'admission': operation['admission'], 'execution': {
+              'workflow_id': operation['workflow_id'], 'run_id': int(os.environ['GITHUB_RUN_ID']),
+              'run_number': int(os.environ['GITHUB_RUN_NUMBER']), 'run_attempt': 1,
+              'launcher': os.environ['GITHUB_SHA'], 'nonce': operation['nonce']}}
+          request = json.dumps({'coordination_sha': sha, 'identity': identity},
+                               sort_keys=True, separators=(',', ':')).encode()
+          assert 0 < len(request) <= 65536
+          (pathlib.Path(os.environ['RUNNER_TEMP']) / 'request.json').write_bytes(request)
+
+      - name: Publish the request only
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coordination-request-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/request.json
+          if-no-files-found: error
+          retention-days: 14
