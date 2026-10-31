@@ -17,7 +17,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 MAX_RESPONSE_BYTES = 1024 * 1024
 MAX_INTEGER_DIGITS = 128
 RESOURCES = re.compile(
-    r'(?:|actions/runs/[1-9][0-9]*(?:/attempts/[1-9][0-9]*/jobs)?'
+    r'(?:|actions/runs/[1-9][0-9]*(?:/attempts/[1-9][0-9]*/jobs|/artifacts)?'
     r'|actions/(?:artifacts|jobs|workflows)/[1-9][0-9]*'
     r'|check-runs/[1-9][0-9]*|commits/[0-9a-f]{40}/check-runs'
     r'|pulls/[1-9][0-9]*(?:/(?:reviews|commits))?'

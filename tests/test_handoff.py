@@ -210,6 +210,25 @@ class HandoffTest(unittest.TestCase):
         with self.assertRaises(HandoffError):
             self.live_verify(verify_active_request, self.request, 'request.json')
 
+    def test_producer_request_waits_for_prepare_and_claim_waits_for_admission(self):
+        self.policy=replace(self.policy,workflow_path='.github/workflows/trusted-native.yml')
+        self.run['path']=self.policy.workflow_path
+        self.active();self.job['name']='admit'
+        prepare=dict(self.job,id=699,name='prepare',status='completed',conclusion='success',
+                     started_at='2026-10-30T20:59:00Z',completed_at='2026-10-30T21:00:00Z')
+        self.jobs={'total_count':2,'jobs':[prepare,self.job]}
+        grant=self.live_verify(verify_active_request,self.request,'request.json')
+        self.state=replace(self.state,commit='d'*40,record=dict(self.state.record,state='granted',grant=grant))
+        admit=dict(self.job,status='completed',conclusion='success',completed_at='2026-10-30T21:00:10Z')
+        native=dict(self.job,id=701,name='native',started_at='2026-10-30T21:00:10Z')
+        self.jobs={'total_count':3,'jobs':[prepare,admit,native]}
+        self.artifact.update(name='coordination-claim-500-1',created_at='2026-10-30T21:00:11Z')
+        claim={'coordination_sha':self.state.commit,'identity':self.request['identity'],
+               'native_job_id':701,'worker_nonce':'5'*32}
+        self.assertEqual(self.live_verify(verify_worker_claim,claim,'claim.json')['native_job_id'],701)
+        prepare['conclusion']='failure'
+        with self.assertRaises(HandoffError):self.live_verify(verify_worker_claim,claim,'claim.json')
+
     def test_active_claim_binds_job_nonce_and_grant(self):
         self.active()
         grant = self.live_verify(verify_active_request, self.request, 'request.json')

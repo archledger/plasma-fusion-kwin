@@ -64,11 +64,13 @@ workflow ID, run ID, run number, attempt, launcher commit and a pre-issued nativ
 nonce. The controller's serial evidence must use that nonce; a worker cannot
 relabel an older report by changing only its outer qualification ID.
 
-`evidence` records prepare/admission/native/reporter job IDs, the separate
+`evidence` records prepare/admission/native job IDs, the separate
 admission artifact ID, the App check ID and the input-manifest SHA-256. These
 concrete IDs are outside the identity hash so a
 producer can allocate jobs and checks without a circular identity calculation.
 They are independently checked against authenticated API records.
+The reporter job ID is derived from the authenticated four-job inventory after
+the run finishes: it need not exist when the native job uploads its receipt.
 
 ## Provenance and native checks
 
@@ -113,7 +115,8 @@ the producer-attested PR/fork fields in a merge decision.
 
 ## Producer and integration obligations
 
-The producer is not implemented yet. Its reviewed, pinned code must issue the
+The producer implementation is in `ci/native/producer.py`, invoked by
+`tools/trusted_native.py`. Its reviewed, pinned code must issue the
 exact admission and nonce before native execution, independently verify the
 prepared source against it, pass the
 qualification/input identities into the worker, and produce fresh evidence.
@@ -143,16 +146,67 @@ the legacy standalone qualification mode (all absent). Standalone mode does not
 produce a version-1 PR qualification merely because its tests pass. The outer
 container/VM boundary and cleanup requirements are unchanged.
 
-This connects the native execution component; it does not complete the trusted
-four-job producer. Assembly should reuse these existing pieces:
+The four-job producer in `trusted-native.yml` uses these existing pieces:
 
-| Job | Existing implementation to reuse | Remaining integration |
+| Job | Existing implementation to reuse | Connection |
 | --- | --- | --- |
-| `prepare` | Candidate binding and `tools/native_inputs.py` | Authenticated candidate collection and isolated preparation for that exact admission. |
-| `admit` | Admission schema and signed coordination reader | Trusted issuance of the nonce/QID/manifest binding and the independent in-progress App check. |
-| `native` | Authenticated claim, one-shot guard and `native-guest` action | Connect the accepted running claim to the three action inputs; retain the resulting evidence. |
-| `report` | Native parsers, qualification and current-policy checks | Collect same-attempt evidence and perform only the authorized App result update. |
+| `prepare` | Candidate association and pinned source tools | Only manifest/patch blobs from the verified signed merge are copied; application is isolated from host credentials and devices. |
+| `admit` | Admission schema and signed coordination reader | A run-bound grant precedes the independent App checks and immutable admission artifact. |
+| `native` | Authenticated claim, one-shot guard and native runner | The accepted running claim gates execution; source, QID, nonce and manifest are checked again. |
+| `report` | Native parsers and App check client | Same-attempt source/evidence validation precedes a fenced App result update. |
 
 Do not replace these missing joins with placeholder jobs or weaken the four-job,
 main-branch, signature, admission or cleanup checks to make a draft workflow pass.
-No production workflow, native run, App write or merge is enabled by this adapter.
+The workflow is manual and main-only, with the existing protected reporting
+environment only on `admit` and `report`. Its ordinary token has Contents-read
+Actions-read (needed for raw artifact ZIP verification) and Checks-read, never
+Contents-write or Checks-write. The reporting App remains repository-scoped Checks-write plus
+Metadata-read. No App private key is supplied to preparation or native execution.
+
+The coordinator must issue the complete signed operation before dispatch. The
+payload digest is SHA-256 of canonical JSON for sorted `{"path", "sha256"}`
+records covering the exact manifest and its complete patch-file set. The
+manifest hash also binds the declared patch order.
+The manifest remains pinned to the policy upstream commit. The `admit` job emits
+the run request and waits for its signed grant before any App mutation, preventing
+duplicate dispatches from racing activation. The native job then requests and
+waits for its own one-shot running claim. Native completion is verified through
+the complete qualification proof, not the no-op acknowledgement format.
+
+Source/fixture validation is not a deployment qualification. Production cutover,
+the coordinator dispatch/release procedure, safe check reopening against the
+real App, and one real end-to-end native proof remain activation gates. The
+workflow is not installed on main or dispatched by this change.
+
+## Maintainer coordinator
+
+The same entrypoint provides the coordinator, not a scheduler or background
+service. Its default is a preflight with no signing, dispatch or remote writes:
+
+```sh
+python3 -m tools.trusted_native coordinate \
+  --source "$TRUSTED_LOCAL_REPO" --policy "$TRUSTED_POLICY" \
+  --keyring "$TRUSTED_PUBLIC_KEYRING" --admission "$APPROVED_ADMISSION" \
+  --state "$EXPECTED_IDLE_STATE"
+```
+
+The policy has the same fields and signoff as the read-only verifier. The
+admission is the complete operator-approved object described above. The state
+file has exactly the expected `commit`, `parent`, `generation`, `epoch` and
+`cutover_digest` anchors of an existing signed idle record. Production bootstrap
+and its cutover evidence are separate: the coordinator never creates a missing
+authority ref.
+
+After separate operational approval, `--apply --journal NEW_FILE` acquires that
+exact idle state, dispatches one main-branch run, grants only its authenticated
+admission request and native claim, and waits for the complete proof. It returns
+to idle as `qualified-only` only after success, cleanup and current association
+are verified. It never updates main. Any failure or unknown outcome leaves
+coordination held; the journal records attempted transitions. There is no
+automatic retry, expiry, takeover or recovery path.
+
+The native artifact omits `reporter_job_id`: that job may not have been allocated
+yet. The final verifier derives the report job from the authenticated, exact
+four-job inventory and still requires its source, attempt, success and timing.
+This corrects the pre-release receipt contract; no historical artifact is
+rewritten or promoted to a new proof.

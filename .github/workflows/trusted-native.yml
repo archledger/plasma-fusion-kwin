@@ -1,0 +1,145 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Trusted native qualification
+on:
+  workflow_dispatch:
+    inputs:
+      coordination_sha:
+        description: Signed dispatching operation issued by the maintainer coordinator
+        required: true
+        type: string
+      parent_sha:
+        description: Exact predecessor of that operation
+        required: true
+        type: string
+      expected_generation:
+        description: Exact dispatching generation
+        required: true
+        type: string
+      epoch:
+        description: Pinned production coordination epoch
+        required: true
+        type: string
+      cutover_digest:
+        description: Pinned verified cutover record digest
+        required: true
+        type: string
+
+# Read-only Actions access is needed to authenticate/download exact raw artifact
+# ZIPs. Neither this token nor native jobs have Contents-write or Checks-write.
+permissions:
+  contents: read
+  actions: read
+  checks: read
+env:
+  GH_TOKEN: ${{ github.token }}
+  COORDINATION_SHA: ${{ inputs.coordination_sha }}
+  PARENT_SHA: ${{ inputs.parent_sha }}
+  EXPECTED_GENERATION: ${{ inputs.expected_generation }}
+  EPOCH: ${{ inputs.epoch }}
+  CUTOVER_DIGEST: ${{ inputs.cutover_digest }}
+  PYTHONDONTWRITEBYTECODE: '1'
+
+jobs:
+  prepare:
+    name: prepare
+    if: github.repository == 'archledger/plasma-fusion-kwin' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Authenticate candidate and prepare in isolation
+        run: python3 -B -m tools.trusted_native prepare
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-prepared-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/trusted-native/prepared/prepared.json
+            ${{ runner.temp }}/trusted-native/prepared/inputs.json
+            ${{ runner.temp }}/trusted-native/prepared/patched-source.tar
+          if-no-files-found: error
+          retention-days: 14
+
+  admit:
+    name: admit
+    needs: prepare
+    if: github.repository == 'archledger/plasma-fusion-kwin' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: native-gate-reporter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Authenticate preparation and request one run grant
+        run: python3 -B -m tools.trusted_native request
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: coordination-request-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/trusted-native/request.json
+          if-no-files-found: error
+          retention-days: 14
+      - name: Verify signed grant and issue immutable admission
+        env:
+          NATIVE_GATE_PRIVATE_KEY: ${{ secrets.NATIVE_GATE_PRIVATE_KEY }}
+        run: python3 -B -m tools.trusted_native admit
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-admission-${{ github.run_id }}-1
+          path: ${{ runner.temp }}/trusted-native/admission.json
+          if-no-files-found: error
+          retention-days: 14
+
+  native:
+    name: native
+    needs: admit
+    if: github.repository == 'archledger/plasma-fusion-kwin' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 75
+    steps:
+      - name: Start whole-job budget
+        run: echo "NATIVE_JOB_STARTED=$(date +%s)" >> "$GITHUB_ENV"
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: actions/upload-artifact
+          ref: cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+          path: _probe-uploader
+          persist-credentials: false
+      - name: Claim once and run the existing isolated native guest
+        uses: ./.github/actions/live-worker
+        env:
+          NATIVE_JOB_ROLE: native
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: native-qualification-${{ github.run_id }}-1
+          path: |
+            ${{ runner.temp }}/trusted-native/result/qualification.json
+            ${{ runner.temp }}/trusted-native/result/report.json
+          if-no-files-found: error
+          retention-days: 14
+
+  report:
+    name: report
+    needs: [prepare, admit, native]
+    if: always() && needs.admit.result == 'success' && github.repository == 'archledger/plasma-fusion-kwin' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    environment: native-gate-reporter
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Verify same-attempt native evidence and report through the App
+        env:
+          NATIVE_GATE_PRIVATE_KEY: ${{ secrets.NATIVE_GATE_PRIVATE_KEY }}
+        run: python3 -B -m tools.trusted_native report

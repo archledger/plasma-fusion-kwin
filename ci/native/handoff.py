@@ -10,6 +10,7 @@ import hashlib
 import re
 import zipfile
 import zlib
+from itertools import pairwise
 
 from ci.native.coordination import SignedCoordination, validate_record
 from ci.native.qualification import (
@@ -56,6 +57,10 @@ def _verify_emission(api, policy, state, mode, *, run_id, artifact_id, archive, 
             'claim': ('granted', 'in_progress', 'live-worker', 'claim'),
             'ack': ('running', 'completed', 'live-worker', 'ack'),
         }[mode]
+        production = policy.workflow_path == '.github/workflows/trusted-native.yml'
+        if production:
+            require(mode != 'ack', 'native completion requires the full qualification proof')
+            job_name = 'admit' if kind == 'request' else 'native'
         require(type(policy) is QualificationPolicy and type(state) is SignedCoordination,
                 'expected trusted policy and authenticated state')
         require(api.repository == policy.repository and state.fingerprint == policy.fingerprint,
@@ -80,10 +85,33 @@ def _verify_emission(api, policy, state, mode, *, run_id, artifact_id, archive, 
         request = read_archive(archive, artifact, {member: MAX_RECEIPT_BYTES})[member]
         identity = {'schema_version': 1, 'admission': operation['admission'], 'execution': execution}
         inventory = api.get(f'actions/runs/{run_id}/attempts/1/jobs', page=1, per_page=100)
-        require(type(inventory['total_count']) is int and inventory['total_count'] == 1
-                and type(inventory['jobs']) is list and len(inventory['jobs']) == 1,
-                'expected one request-only job')
-        job = inventory['jobs'][0]
+        jobs = inventory['jobs']
+        require(type(inventory['total_count']) is int and type(jobs) is list
+                and inventory['total_count'] == len(jobs), 'incomplete job inventory')
+        if production:
+            names = [j['name'] for j in jobs]
+            required = ['prepare', 'admit'] if kind == 'request' else ['prepare', 'admit', 'native']
+            require(len(set(names)) == len(names) and set(required) <= set(names)
+                    and set(names) <= {'prepare','admit','native','report'}, 'unexpected producer job graph')
+            require(len({identifier(j['id']) for j in jobs}) == len(jobs), 'duplicate producer job IDs')
+            for item in jobs:
+                require(identifier(item['run_id']) == run_id and type(item['run_attempt']) is int
+                        and item['run_attempt'] == 1 and item['head_sha'] == policy.launcher,
+                        'producer job identity differs')
+                if item['name'] in required[:-1]:
+                    require(item['status'] == 'completed' and item['conclusion'] == 'success',
+                            'producer prerequisite failed')
+                elif item['name'] not in required:
+                    require(item['status'] in {'queued', 'waiting'} and item.get('started_at') is None
+                            and item.get('conclusion') is None, 'later producer job started early')
+            ordered = {j['name']: j for j in jobs}
+            for earlier, later in pairwise(required):
+                require(timestamp(ordered[earlier]['completed_at']) <= timestamp(ordered[later]['started_at']),
+                        'producer jobs are out of order')
+            job = next(j for j in jobs if j['name'] == job_name)
+        else:
+            require(len(jobs) == 1, 'expected one request-only job')
+            job = jobs[0]
         identifier(job['id'])
         require(identifier(job['run_id']) == run_id and type(job['run_attempt']) is int
                 and job['run_attempt'] == 1 and job['head_sha'] == policy.launcher
