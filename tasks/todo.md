@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-06 and checkpoint B are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-07 and checkpoint B are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -151,15 +151,21 @@ readiness/authority migration continues at FC-07/08 and no live gate is approved
 
 ### FC-07: Fixed authority read and anchor loading
 
-- [ ] Allow read-only access to only the fixed coordination-ref endpoint; reject
+- [x] Allow read-only access to only the fixed coordination-ref endpoint; reject
   arbitrary ref/URL expansion and retain bounded transport/pagination behavior.
-- [ ] Parse exact trusted anchor fields with existing regular-file/JSON limits,
+- [x] Parse exact trusted anchor fields with existing regular-file/JSON limits,
   validate its local signed object and exact remote tip, without automatic fetch.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_proof_api.py' -v`
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_proof_api.py' -v`
   and `python3 -B -m unittest discover -s tests -p 'test_readiness.py' -v`.
 
 Dependencies: FC-03. Scope: `ci/native/proof_api.py`, `ci/native/readiness.py`,
 `tests/test_proof_api.py`, `tests/test_readiness.py`.
+
+FC-07: 537 full-suite tests, eight targeted mutations, Ruff, compilation,
+manifest validation and pinned REUSE pass. Scoped source and diff/status review
+have no findings. Real signed local fixtures verify the anchor; missing objects
+are not fetched. These helpers do not yet gate the CLI or current readiness:
+that integration and the signed-operation predicates remain FC-08.
 
 ### FC-08: Current signed operation in readiness
 

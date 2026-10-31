@@ -6,6 +6,7 @@ import os
 import stat
 from dataclasses import asdict, fields
 
+from ci.native.coordination import MAX_RECORD_BYTES, read_signed_coordination
 from ci.native.current_policy import verify_current_policy
 from ci.native.merge_update import MergeCommit
 from ci.native.proof_api import (
@@ -21,6 +22,7 @@ from ci.native.qualification import (
     MAX_REPORT_BYTES,
     QualificationError,
     QualificationPolicy,
+    digest,
     identifier,
     read_archive,
     require,
@@ -29,6 +31,7 @@ from ci.native.qualification import (
 from ci.native.signed_merge import SignatureError, verify_signed_merge
 
 MAX_POLICY_BYTES = 256 * 1024
+MAX_ANCHOR_BYTES = MAX_RECORD_BYTES
 
 
 def read_regular(path, maximum):
@@ -66,7 +69,93 @@ def load_policy(raw):
         raise QualificationError('invalid operator policy') from None
 
 
-def verify_readiness(api, policy, *, source, keyring, signoff, artifact_id, archive, admission_archive):
+def _validate_coordination_anchor(value):
+    require(
+        type(value) is dict
+        and set(value) == {'commit', 'parent', 'generation', 'epoch', 'cutover_digest'},
+        'invalid coordination anchor fields',
+    )
+    digest(value['commit'])
+    generation = value['generation']
+    require(
+        type(generation) is int and 0 <= generation < 2**63,
+        'invalid coordination anchor generation',
+    )
+    require(
+        (value['parent'] is None) == (generation == 0),
+        'invalid coordination anchor parent',
+    )
+    if value['parent'] is not None:
+        digest(value['parent'])
+    digest(value['epoch'], 32)
+    digest(value['cutover_digest'], 64)
+    return dict(value)
+
+
+def load_coordination_anchor(raw):
+    """Parse an explicit operator anchor, never discover one from a proof or ref."""
+    try:
+        require(
+            type(raw) is bytes and len(raw) <= MAX_ANCHOR_BYTES,
+            'invalid coordination anchor size',
+        )
+        value = json.loads(
+            raw.decode('utf-8'),
+            object_pairs_hook=object_pairs,
+            parse_constant=reject_constant,
+            parse_int=bounded_integer,
+            parse_float=finite_float,
+        )
+        return _validate_coordination_anchor(value)
+    except QualificationError:
+        raise
+    except (ValueError, TypeError, KeyError, RecursionError):
+        raise QualificationError('invalid operator coordination anchor') from None
+
+
+def verify_coordination_anchor(api, policy, *, source, keyring, signoff, anchor):
+    """Read one local signed state and match its fixed remote tip; never fetch.
+
+    Signature and ref equality do not authorize a transition, establish
+    quiescence or make the operation currently ready. The operator owns the
+    anchor and its protocol history. Current-state predicates are separate.
+    """
+    try:
+        expected = _validate_coordination_anchor(anchor)
+        require(
+            type(policy) is QualificationPolicy and api.repository == policy.repository,
+            'wrong coordination policy or repository',
+        )
+        state = read_signed_coordination(
+            source,
+            expected['commit'],
+            policy=policy,
+            keyring=keyring,
+            signoff=signoff,
+            expected_parent=expected['parent'],
+            expected_generation=expected['generation'],
+            expected_epoch=expected['epoch'],
+            expected_cutover_digest=expected['cutover_digest'],
+        )
+        ref = api.get('git/ref/heads/native-gate-coordination')
+        require(
+            ref['ref'] == 'refs/heads/native-gate-coordination'
+            and ref['object']['type'] == 'commit'
+            and digest(ref['object']['sha']) == expected['commit'],
+            'coordination ref differs from the trusted anchor',
+        )
+        return state
+    except QualificationError:
+        raise
+    except (ValueError, TypeError, KeyError, AttributeError, OSError):
+        raise QualificationError(
+            'cannot verify the trusted coordination anchor'
+        ) from None
+
+
+def verify_readiness(
+    api, policy, *, source, keyring, signoff, artifact_id, archive, admission_archive
+):
     """Verify historical proof plus current policy; never invoke a Git update."""
     try:
         require(api.repository == policy.repository, 'wrong proof API repository')

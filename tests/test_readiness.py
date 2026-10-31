@@ -13,6 +13,9 @@ from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+import test_signed_coordination as signed_fixtures
+
+from ci.native import merge_update, readiness
 from ci.native.current_policy import ReadinessSnapshot
 from ci.native.merge_update import MergeCommit
 from ci.native.qualification import (
@@ -126,6 +129,194 @@ class ReadinessTest(unittest.TestCase):
             os.mkfifo(fifo)
             with self.assertRaises(QualificationError):
                 read_regular(fifo, 100)
+
+
+class AnchorShapeTest(unittest.TestCase):
+    def setUp(self):
+        self.anchor = {
+            'commit': 'a' * 40,
+            'parent': 'b' * 40,
+            'generation': 1,
+            'epoch': 'c' * 32,
+            'cutover_digest': 'd' * 64,
+        }
+
+    def load(self, value):
+        return readiness.load_coordination_anchor(json.dumps(value).encode())
+
+    def test_exact_anchor_and_explicit_bootstrap_round_trip(self):
+        self.assertEqual(self.load(self.anchor), self.anchor)
+        bootstrap = dict(self.anchor, parent=None, generation=0)
+        self.assertEqual(self.load(bootstrap), bootstrap)
+
+    def test_extra_missing_or_invalid_fields_are_not_trusted(self):
+        invalid = [None, [], {}, dict(self.anchor, endpoint='https://invalid.test')]
+        invalid += [
+            {key: value for key, value in self.anchor.items() if key != field}
+            for field in self.anchor
+        ]
+        invalid += [
+            dict(self.anchor, **{field: value})
+            for field, value in [
+                ('commit', '0' * 40),
+                ('commit', 'bad'),
+                ('generation', True),
+                ('generation', 1.0),
+                ('generation', -1),
+                ('generation', 2**63),
+                ('parent', None),
+                ('parent', 'bad'),
+                ('epoch', '0' * 32),
+                ('cutover_digest', '0' * 64),
+                ('generation', 0),
+            ]
+        ]
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(QualificationError):
+                self.load(value)
+
+    def test_json_and_size_limits_are_preserved(self):
+        raw = json.dumps(self.anchor).encode()
+        maximum = readiness.MAX_ANCHOR_BYTES
+        self.assertEqual(
+            readiness.load_coordination_anchor(raw + b' ' * (maximum - len(raw))),
+            self.anchor,
+        )
+        for value in [
+            raw + b' ' * (maximum + 1 - len(raw)),
+            raw.decode(),
+            b'\xff',
+            b'[]',
+            raw.replace(b'"generation": 1', b'"generation": 1, "generation": 1'),
+            raw.replace(b'"generation": 1', b'"generation": NaN'),
+        ]:
+            with (
+                self.subTest(value=repr(value)[:60]),
+                self.assertRaises(QualificationError),
+            ):
+                readiness.load_coordination_anchor(value)
+
+
+class AnchorSignatureTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        class Fixture(signed_fixtures.SignedCoordinationTest):
+            pass
+
+        cls.fixture_type = Fixture
+        Fixture.setUpClass()
+        cls.addClassCleanup(Fixture.doClassCleanups)
+
+    def setUp(self):
+        self.fixture = self.fixture_type()
+        self.fixture.setUp()
+        self.addCleanup(self.fixture.doCleanups)
+        self.anchor = {
+            'commit': self.fixture.commit_id,
+            'parent': self.fixture.parent,
+            'generation': 1,
+            'epoch': 'e' * 32,
+            'cutover_digest': 'f' * 64,
+        }
+        self.api = unittest.mock.Mock(repository=self.fixture.policy.repository)
+        self.api.get.return_value = {
+            'ref': 'refs/heads/native-gate-coordination',
+            'object': {'type': 'commit', 'sha': self.anchor['commit']},
+        }
+
+    def verify(self, **kwargs):
+        options = {
+            'source': self.fixture.source,
+            'keyring': self.fixture.public,
+            'signoff': signed_fixtures.SIGNOFF,
+            'anchor': self.anchor,
+        }
+        options.update(kwargs)
+        return readiness.verify_coordination_anchor(
+            self.api, self.fixture.policy, **options
+        )
+
+    def test_real_signature_and_exact_remote_tip_are_both_required(self):
+        raw = json.dumps(self.anchor).encode()
+        path = self.fixture.source / 'anchor.json'
+        path.write_bytes(raw)
+        anchor = readiness.load_coordination_anchor(
+            read_regular(path, readiness.MAX_ANCHOR_BYTES)
+        )
+        result = self.verify(anchor=anchor)
+        self.assertEqual(result.commit, self.anchor['commit'])
+        self.assertEqual(result.record, self.fixture.record)
+        self.api.get.assert_called_once_with('git/ref/heads/native-gate-coordination')
+
+    def test_changed_remote_sha_ref_or_type_is_refused(self):
+        for value in [
+            {
+                'ref': 'refs/heads/native-gate-coordination',
+                'object': {'type': 'commit', 'sha': 'a' * 40},
+            },
+            {
+                'ref': 'refs/heads/other',
+                'object': {'type': 'commit', 'sha': self.anchor['commit']},
+            },
+            {
+                'ref': 'refs/heads/native-gate-coordination',
+                'object': {'type': 'tag', 'sha': self.anchor['commit']},
+            },
+        ]:
+            self.api.get.return_value = value
+            with self.subTest(value=value), self.assertRaises(QualificationError):
+                self.verify()
+
+    def test_malformed_remote_response_never_returns_verified_state(self):
+        for value in [
+            None,
+            [],
+            {},
+            {'ref': 'refs/heads/native-gate-coordination', 'object': []},
+        ]:
+            self.api.get.return_value = value
+            with self.subTest(value=value), self.assertRaises(QualificationError):
+                self.verify()
+
+    def test_direct_invalid_anchor_is_refused_before_signature_or_network(self):
+        for value in [
+            dict(self.anchor, generation=True),
+            dict(self.anchor, url='https://invalid.test'),
+        ]:
+            with (
+                patch.object(readiness, 'read_signed_coordination') as read,
+                self.assertRaises(QualificationError),
+            ):
+                self.verify(anchor=value)
+            read.assert_not_called()
+        self.api.get.assert_not_called()
+
+    def test_unavailable_local_object_is_not_fetched(self):
+        original = merge_update.git
+        with (
+            patch.object(merge_update, 'git', wraps=original) as calls,
+            self.assertRaises(QualificationError),
+        ):
+            self.verify(anchor=dict(self.anchor, commit='a' * 40))
+        self.assertTrue(calls.call_args_list)
+        self.assertTrue(
+            all(call.args[1] == 'cat-file' for call in calls.call_args_list)
+        )
+        self.api.get.assert_not_called()
+
+    def test_wrong_signer_and_stale_anchor_metadata_are_refused(self):
+        commit = self.fixture.commit(self.fixture.record, self.fixture.parent, signer=1)
+        values = [
+            dict(self.anchor, commit=commit),
+            dict(self.anchor, parent='b' * 40),
+            dict(self.anchor, generation=2),
+            dict(self.anchor, epoch='a' * 32),
+            dict(self.anchor, cutover_digest='a' * 64),
+        ]
+        for anchor in values:
+            with self.subTest(anchor=anchor), self.assertRaises(QualificationError):
+                self.verify(anchor=anchor)
+        self.api.get.assert_not_called()
 
 
 class DeadlineTest(unittest.TestCase):

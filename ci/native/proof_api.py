@@ -23,6 +23,7 @@ RESOURCES = re.compile(
     r'|pulls/[1-9][0-9]*(?:/(?:reviews|commits))?'
     r'|git/commits/[0-9a-f]{40}'
     r'|git/ref/(?:heads/main|pull/[1-9][0-9]*/(?:head|merge))'
+    r'|git/ref/heads/native-gate-coordination'
     r'|branches/main/protection(?:/required_signatures)?'
     r'|rules/branches/main'
     r'|collaborators/[A-Za-z0-9][A-Za-z0-9-]{0,38}/permission)'
