@@ -21,11 +21,12 @@ from ci.native.producer import COORDINATION_REF, ENDPOINT, REPOSITORY
 from ci.native.proof_api import ProofAPI
 from ci.native.qualification import (
     QualificationPolicy,
+    QualifiedEvidenceV2,
     canonical_json,
     identifier,
     require,
     validate_admission,
-    verify_qualification,
+    verify_qualification_v2,
 )
 from ci.native.signed_merge import verify_signed_merge
 
@@ -330,7 +331,7 @@ def coordinate(
     )
     result_id, result = artifact(f'native-qualification-{run_id}-1')
     _, approved = artifact(f'native-admission-{run_id}-1')
-    evidence = verify_qualification(
+    evidence = verify_qualification_v2(
         api,
         policy,
         signed,
@@ -338,11 +339,24 @@ def coordinate(
         archive=result,
         admission_archive=approved,
     )
-    verify_current_association(api, policy, evidence)
     require(
-        evidence.qualification_id == grant['qualification_id'],
-        'completed proof differs from grant',
+        type(evidence) is QualifiedEvidenceV2,
+        'completed proof is not verified v2 evidence',
     )
+    require(
+        evidence.qualification_id == grant['qualification_id']
+        and evidence.run_id == run_id == grant['run_id']
+        and evidence.run_number == grant['run_number']
+        and evidence.operation_nonce
+        == nonce
+        == current.record['operation']['nonce']
+        == current.record['operation']['id']
+        and evidence.native_job_id == grant['native_job_id']
+        and identifier(grant['run_attempt']) == 1
+        and evidence.signed_merge == signed,
+        'completed proof differs from the issued operation and grant',
+    )
+    verify_current_association(api, policy, evidence)
     append(
         dict(
             current.record,

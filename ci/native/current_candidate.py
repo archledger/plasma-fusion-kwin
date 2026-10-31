@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from ci.native.qualification import (
     QualificationError,
     QualifiedEvidence,
+    QualifiedEvidenceV2,
     identifier,
     require,
     validate_admission,
@@ -71,13 +72,29 @@ def verify_admission_association(api, policy, admission, signed, qualification_i
 
 def verify_current_association(api, policy, evidence):
     """Preserve the historical-evidence type boundary for finalizer callers."""
-    require(type(evidence) is QualifiedEvidence, 'expected verified historical evidence')
+    require(
+        type(evidence) in {QualifiedEvidence, QualifiedEvidenceV2},
+        'expected verified historical evidence',
+    )
     attestation, signed = evidence.producer_attestation, evidence.signed_merge
-    admission = {'repository_id': policy.repository_id, 'pr_number': attestation.pr_number,
-        'head_repository_id': attestation.head_repository_id, 'base': signed.base, 'head': signed.head,
-        'merge': attestation.synthetic_merge, 'signed_merge': signed.commit, 'tree': signed.tree,
+    admission = {
+        'repository_id': policy.repository_id,
+        'pr_number': attestation.pr_number,
+        'head_repository_id': attestation.head_repository_id,
+        'base': signed.base,
+        'head': signed.head,
+        'merge': attestation.synthetic_merge,
+        'signed_merge': signed.commit,
+        'tree': signed.tree,
         'payload_sha256': attestation.payload_sha256,
-        'source': {'tree': attestation.source_tree, 'sha256': attestation.source_sha256,
-                   'bytes': attestation.source_bytes}, 'approver_id': attestation.approver_id,
-        'upstream_commit': attestation.upstream_commit}
-    return verify_admission_association(api, policy, admission, signed, evidence.qualification_id)
+        'source': {
+            'tree': attestation.source_tree,
+            'sha256': attestation.source_sha256,
+            'bytes': attestation.source_bytes,
+        },
+        'approver_id': attestation.approver_id,
+        'upstream_commit': attestation.upstream_commit,
+    }
+    return verify_admission_association(
+        api, policy, admission, signed, evidence.qualification_id
+    )

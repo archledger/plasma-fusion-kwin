@@ -2,6 +2,9 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Hosted native qualification tasks
 
+The completed checklist below is retained. The current proposed checklist is
+[Fresh-check lifecycle tasks](#fresh-check-lifecycle-tasks).
+
 - [x] Confirm the bounded native-run plan before workload execution.
 - [x] Add strict native-result and private runtime-QML staging tests/helpers.
   - Verify exact suites/cases, zero failures/skips/blacklists, renderer and hashes.
@@ -20,3 +23,228 @@
 - [x] Runtime receipts prove the exact inputs, all required tests and cleanup.
 - [x] Shared handoff/index and source/evidence backups are current.
 - [x] No merge, deployment, host installation or upstream resubmission occurred.
+
+## Fresh-check lifecycle tasks
+
+Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
+owner on 2026-10-31; FC-01 through FC-10 and source checkpoints A/B/C are complete. See the
+[plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
+dependency graph and separate operational approvals. Every implementation box
+starts unchecked; historical tests and reviews are not completion evidence.
+
+### FC-01: Shared exact-record validation
+
+- [x] Add pure expected-identity and visible-conflict validation, without writes.
+- [x] Reject wrong App/commit/name/ID/QID/URL, conflicting QID/run mappings,
+  duplicate IDs and other nonterminal records; retain unrelated terminal history
+  as inert observations, never authenticated qualification.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_records.py' -v`.
+
+Dependencies: none. Scope: two proposed files, `ci/native/check_records.py` and
+`tests/test_check_records.py`. Do not change pagination limits or claim global
+history completeness.
+
+### FC-02: Bounded one-shot write journal
+
+- [x] Persist intent before a write and its validated acknowledgment before the
+  next write; prevent repeated action/role attempts and unsafe journal reuse.
+- [x] Refuse unavailable/unsafe persistence; cap the record at 64 KiB and record
+  only safe fields. Simulate short writes, acknowledgment-save failure and loss.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_journal.py' -v`.
+
+Dependencies: none. Scope: two proposed files, `ci/native/check_journal.py` and
+`tests/test_check_journal.py`. A journal is diagnostic evidence, not authority or
+a restart/recovery mechanism.
+
+### FC-03: Strict v2 evidence contracts
+
+- [x] Validate exact v2 admission/result fields, distinct native/activation IDs,
+  unchanged identity/QID calculation, and the verified nonce/native job binding.
+- [x] Reject missing versions, v1/mixed envelopes, extra fields, changed IDs and
+  boolean/invalid numeric identifiers. Introduce helpers before switching callers.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_evidence.py' -v`.
+
+Dependencies: none. Scope: `ci/native/qualification.py` and proposed
+`tests/test_check_evidence.py`. Legacy historical helpers must not become a
+fallback for current v2 entry points.
+
+### Checkpoint A: Foundations
+
+- [x] FC-01–03 focused tests and full-suite verification recipes pass.
+- [x] No existing assertion, native case, page/size limit or check was weakened.
+- [x] Save exact diff/test evidence; none of these helpers authorizes a live run.
+
+Checkpoint A: 456 tests and 11 targeted mutation checks passed, with Ruff,
+compilation, manifest validation and pinned REUSE passing. Independent scoped
+reviews have no remaining required findings. These helpers are not yet wired
+into production; FC-04 is next. Evidence is retained in the shared project handoff.
+
+### FC-04: Create-only client with an API-only probe
+
+- [x] Wire shared validation/journal into fresh POST and exact-ID completion;
+  remove reset PATCHes, refuse replay and stop after any uncertain write.
+- [x] Adapt the validation-only probe for one real run/one pair and authenticated
+  predecessor evidence. Stable validation contexts survive across actual runs;
+  tests do not fabricate live identities or invoke production authority writes.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check*.py' -v`.
+
+Dependencies: FC-01–03. Scope: `ci/native/checks.py`, `tests/test_checks.py`,
+`tools/probe_check_lifecycle.py`, `tests/test_check_lifecycle_probe.py`, and
+`.github/workflows/check-lifecycle-probe.yml`. Preserve safe diagnostics and the
+HTTP 422 regression; no workflow dispatch is part of this task.
+
+FC-04: full suite 469 tests, Ruff, compilation, manifest, pinned REUSE and
+Actionlint passed. Scoped source and downloader-delta reviews have no required
+findings. The optional download-buffer bound was implemented and tested. No
+App/native dispatch occurred. Production callers still need FC-05/06 wiring;
+they cannot write checks without the new journal.
+
+### FC-05: Producer admission and partial-failure binding
+
+- [x] Publish v2 admission only after both fresh IDs are verified; native and
+  report jobs consume that exact pair and never scan to adopt a replacement.
+- [x] Export admit/report journals with separate always-attempt artifact names;
+  retain success-only admission and existing job dependencies. Failure, missing
+  upload or partial completion cannot start native work or release authority.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_producer.py' -v`
+  and `python3 -B -m unittest discover -s tests -p 'test_workflow.py' -v`.
+
+Dependencies: FC-04. Scope: `ci/native/producer.py`, `tests/test_producer.py`,
+`.github/workflows/trusted-native.yml`, `tests/test_workflow.py`.
+
+FC-05: 483 full-suite tests, seven targeted mutations, Ruff, compilation,
+manifest validation, pinned REUSE and Actionlint passed. Source review has no
+remaining findings. The added post-claim missing-check test prevents guest
+execution and catches removal of the final pair check. FC-06 must still update
+completed qualification and coordinator verification; no live run is authorized.
+
+### FC-06: Both-check qualification and v2 coordinator
+
+- [x] Verify both admitted IDs, successful terminal identities, report-job time
+  bounds and unchanged native/cleanup provenance. Preserve reporter job-ID derivation.
+- [x] Switch the coordinator's completed-proof path to v2-only bindings; match
+  the issued grant/nonce and retain qualified-only completion with no main write.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_*qualification*.py' -v`,
+  `python3 -B -m unittest discover -s tests -p 'test_check_evidence.py' -v` and
+  `python3 -B -m unittest discover -s tests -p 'test_coordinator.py' -v`.
+
+Dependencies: FC-03, FC-05. Scope: `ci/native/qualification.py`,
+`ci/native/coordinator.py`, `tests/test_qualification.py`,
+`tests/test_check_evidence.py`, `tests/test_coordinator.py`.
+
+The shared current-association guard also accepts the explicit verified v2
+type, with its existing PR/ref checks unchanged and unregistered subclasses
+still refused. Covered by `tests/test_current_candidate.py`.
+
+### Checkpoint B: Coherent producer contract
+
+- [x] FC-04–06 focused tests and full-suite verification recipes pass.
+- [x] No production caller can use reset, unversioned admission, v1 fallback or
+  a scan-derived check ID. A failed journal/upload remains a failure.
+- [x] Review the write/credential boundaries and preserve source evidence.
+
+Checkpoint B: 527 tests, eight targeted mutations, Ruff, compilation, manifest
+validation and pinned REUSE pass. Source and focused review follow-up have no
+remaining findings. Legacy historical verification remains explicit, separate
+from the v2 producer/coordinator path. This is source acceptance only; current
+readiness/authority migration continues at FC-07/08 and no live gate is approved.
+
+### FC-07: Fixed authority read and anchor loading
+
+- [x] Allow read-only access to only the fixed coordination-ref endpoint; reject
+  arbitrary ref/URL expansion and retain bounded transport/pagination behavior.
+- [x] Parse exact trusted anchor fields with existing regular-file/JSON limits,
+  validate its local signed object and exact remote tip, without automatic fetch.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_proof_api.py' -v`
+  and `python3 -B -m unittest discover -s tests -p 'test_readiness.py' -v`.
+
+Dependencies: FC-03. Scope: `ci/native/proof_api.py`, `ci/native/readiness.py`,
+`tests/test_proof_api.py`, `tests/test_readiness.py`.
+
+FC-07: 537 full-suite tests, eight targeted mutations, Ruff, compilation,
+manifest validation and pinned REUSE pass. Scoped source and diff/status review
+have no findings. Real signed local fixtures verify the anchor; missing objects
+are not fetched. These helpers do not yet gate the CLI or current readiness:
+that integration and the signed-operation predicates remain FC-08.
+
+### FC-08: Current signed operation in readiness
+
+- [x] Require `--coordination-anchor` and verified v2 bindings. Enforce exact
+  running/finalizing predicates or qualified-only idle with matching nonce/QID
+  and null main result; reject every other state or changed tip.
+- [x] Select only the admitted check pair, recheck visible conflicts and preserve
+  all existing protection/review/association gates and `merge_authorized: false`.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_current_policy.py' -v`
+  and `python3 -B -m unittest discover -s tests -p 'test_readiness.py' -v`.
+
+Dependencies: FC-01, FC-06–07. Scope: `ci/native/current_policy.py`,
+`ci/native/readiness.py`, `tools/verify_native_proof.py`,
+`tests/test_current_policy.py`, `tests/test_readiness.py`.
+
+FC-08: 554 full-suite tests, eight targeted mutations, Ruff, compilation,
+manifest validation and pinned REUSE pass. Complete diff/status review has no
+findings. The read-only command now requires the anchor and returns its observed
+commit/state while keeping `merge_authorized: false`. FC-09 must still add the
+integrated failure/replay coverage before checkpoint C and final source closeout.
+
+### FC-09: Integrated failure and replay coverage
+
+- [x] Cover fresh admission through qualification/readiness, old success after
+  new signed activation, missing v2 evidence, partial create/publication/report
+  failure, and changed authority between observations using deterministic fixtures.
+- [x] Mutation checks must catch removed ID/QID/nonce/version/fence validation,
+  adopted records and ignored partial failure. No live identities are invented.
+- [x] Verify the full-suite recipes in `plan.md`; save each targeted mutation
+  result and do not substitute a previous revision's passing output.
+
+Dependencies: FC-05–08. Scope: `tests/test_producer.py`,
+`tests/test_coordinator.py`, `tests/test_current_policy.py`,
+`tests/test_readiness.py`, `tests/test_check_lifecycle_probe.py`.
+
+The integrated cases and shared fixture are in `tests/test_lifecycle_integration.py`
+and `tests/lifecycle_fixture.py`, rather than expanding the already-large
+per-layer suites. This slice changes no production code.
+
+### Checkpoint C: Current authority and regressions
+
+- [x] FC-07–09 focused tests, full suite, lint, compile and manifest checks pass.
+- [x] Fixtures demonstrate the claimed refusal paths, not just helper call counts.
+- [x] No source test is presented as GitHub/native operational qualification.
+
+Checkpoint C: 569 full-suite tests, ten targeted integration mutations, Ruff,
+compilation, manifest validation and pinned REUSE pass. Source and follow-up
+reviews have no remaining findings. Fifteen integrated cases use actual local
+signatures and artifact/producer/readiness validators with simulated API/native
+data; they do not qualify live GitHub behavior or native execution.
+
+### FC-10: Documentation and source closeout
+
+- [x] Update lifecycle, evidence, read-only command and integration docs to the
+  implemented contracts; describe unresolved live gates and exact approval scope.
+- [x] Run full source validation, pinned Actionlint/REUSE and exact public-source
+  patch application; resolve scoped review findings and retain evidence.
+- [x] Prepare signed source commits and a reviewable source-only PR under existing
+  attribution rules. Do not merge or start any operational gate.
+
+Dependencies: FC-09. Scope: `docs/CHECK-LIFECYCLE-PROBE.md`,
+`docs/QUALIFICATION-EVIDENCE.md`, `docs/READ-ONLY-FINALIZER.md`,
+`docs/MAIN-INTEGRATION.md`. Progress updates to this checklist are administrative,
+not a license to broaden an implementation slice.
+
+Local FC-10 source validation and documentation review passed: 569 tests,
+Ruff, compilation, all 11 workflows through pinned Actionlint, REUSE 127/127,
+local links and exact pinned public-source patch application. Documentation
+also aligns the adjacent `MERGE-READINESS.md` guide and current plan status.
+The signed source series is published in draft [PR #15](https://github.com/archledger/plasma-fusion-kwin/pull/15).
+Hosted source-check status is recorded on that PR. No live gate has been run;
+merge and operational approvals remain outside this completed source plan.
+
+### Outside this plan
+
+- [ ] Obtain separate approval for main merge after source review.
+- [ ] Obtain separate approval and evidence for old-operation reconciliation.
+- [ ] Obtain explicitly counted approvals for App-only dispatches.
+- [ ] Obtain separate approval for a fresh native qualification.
+- [ ] Keep finalizing-write/protected-ref/enforcement work separately scoped.
+
+These are approval reminders, not implementation tasks or permission to execute.

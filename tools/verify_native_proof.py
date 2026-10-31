@@ -68,43 +68,91 @@ def run_isolated(command, *, env, timeout):
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(description='Verify native merge evidence; never push or write checks.')
-    for name in ['policy', 'source', 'keyring', 'artifact', 'admission']:
+    parser = argparse.ArgumentParser(
+        description='Verify native merge evidence; never push or write checks.'
+    )
+    for name in [
+        'policy',
+        'source',
+        'keyring',
+        'artifact',
+        'admission',
+        'coordination-anchor',
+    ]:
         parser.add_argument('--' + name, required=True)
     parser.add_argument('--artifact-id', type=int, required=True)
     parser.add_argument('--timeout', type=int, default=120)
     args = parser.parse_args(argv)
     if not 1 <= args.timeout <= 300:
         parser.error('--timeout must be between 1 and 300 seconds')
-    options = {name: str(Path(getattr(args, name)).expanduser().absolute())
-               for name in ['policy', 'source', 'keyring', 'artifact', 'admission']}
+    options = {
+        name: str(Path(getattr(args, name)).expanduser().absolute())
+        for name in [
+            'policy',
+            'source',
+            'keyring',
+            'artifact',
+            'admission',
+            'coordination_anchor',
+        ]
+    }
     options['artifact_id'] = args.artifact_id
-    program = ('import json,sys; sys.path.insert(0, ' + repr(str(ROOT)) + '); '
-               'from ci.native.readiness import _worker; raise SystemExit(_worker(json.loads(sys.argv[1])))')
+    program = (
+        'import json,sys; sys.path.insert(0, ' + repr(str(ROOT)) + '); '
+        'from ci.native.readiness import _worker; raise SystemExit(_worker(json.loads(sys.argv[1])))'
+    )
     try:
-        with handled_interruptions(), tempfile.TemporaryDirectory(prefix='native-proof-worker-') as directory:
-            env = {'PATH': os.defpath, 'HOME': directory, 'TMPDIR': directory, 'LANG': 'C.UTF-8'}
+        with (
+            handled_interruptions(),
+            tempfile.TemporaryDirectory(prefix='native-proof-worker-') as directory,
+        ):
+            env = {
+                'PATH': os.defpath,
+                'HOME': directory,
+                'TMPDIR': directory,
+                'LANG': 'C.UTF-8',
+            }
             if 'GH_TOKEN' in os.environ:
                 env['GH_TOKEN'] = os.environ['GH_TOKEN']
-            result = run_isolated([sys.executable, '-I', '-B', '-c', program, json.dumps(options)],
-                                  env=env, timeout=args.timeout)
+            result = run_isolated(
+                [sys.executable, '-I', '-B', '-c', program, json.dumps(options)],
+                env=env,
+                timeout=args.timeout,
+            )
         if len(result.stdout) > 1024 * 1024:
             raise ValueError('oversized worker result')
         value = json.loads(result.stdout)
-        if (type(value) is not dict or type(value.get('ok')) is not bool
-                or value.get('mode') != 'read-only' or value.get('merge_authorized') is not False
-                or (result.returncode == 0) != value['ok']):
+        if (
+            type(value) is not dict
+            or type(value.get('ok')) is not bool
+            or value.get('mode') != 'read-only'
+            or value.get('merge_authorized') is not False
+            or (result.returncode == 0) != value['ok']
+        ):
             raise ValueError('invalid worker result')
     except DeadlineExceeded as error:
-        value = {'ok': False, 'mode': 'read-only', 'merge_authorized': False, 'error': str(error)}
+        value = {
+            'ok': False,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'error': str(error),
+        }
         print(json.dumps(value, sort_keys=True))
         return 2
     except (VerificationInterrupted, KeyboardInterrupt):
-        value = {'ok': False, 'mode': 'read-only', 'merge_authorized': False,
-                 'error': 'read-only verification interrupted'}
+        value = {
+            'ok': False,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'error': 'read-only verification interrupted',
+        }
     except (OSError, ValueError, TypeError):
-        value = {'ok': False, 'mode': 'read-only', 'merge_authorized': False,
-                 'error': 'verification worker did not return a valid result'}
+        value = {
+            'ok': False,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'error': 'verification worker did not return a valid result',
+        }
     print(json.dumps(value, sort_keys=True))
     return 0 if value['ok'] else 1
 

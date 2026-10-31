@@ -98,6 +98,31 @@ class QualifiedEvidence:
     run_number: int
 
 
+@dataclass(frozen=True)
+class CheckBinding:
+    """Validated shape only; the containing artifact needs authentication."""
+    native_check_id: int
+    activation_check_id: int
+
+    def __post_init__(self):
+        identifier(self.native_check_id)
+        identifier(self.activation_check_id)
+        require(self.native_check_id != self.activation_check_id, 'check roles share an ID')
+
+
+@dataclass(frozen=True)
+class QualifiedEvidenceV2(QualifiedEvidence):
+    """Carry v2 bindings; trusted callers must authenticate the whole proof."""
+    activation_check_id: int
+    operation_nonce: str
+    native_job_id: int
+
+    def __post_init__(self):
+        CheckBinding(self.check_run_id, self.activation_check_id)
+        digest(self.operation_nonce, 32)
+        identifier(self.native_job_id)
+
+
 def require(condition, message):
     if not condition:
         raise QualificationError(message)
@@ -171,26 +196,18 @@ def validate_admission(admission):
     require(identifier(admission['source']['bytes']) <= 128 * 1024**2, 'source archive too large')
 
 
-def validate_receipt(receipt, policy, signed):
-    keys(receipt, ['identity', 'qualification_id', 'evidence'])
-    identity, evidence = receipt['identity'], receipt['evidence']
+def _validate_identity(identity, qualification_id, policy, signed):
     keys(identity, ['schema_version', 'admission', 'execution'])
     require(type(identity['schema_version']) is int and identity['schema_version'] == 1,
             'unsupported qualification schema')
     admission, execution = identity['admission'], identity['execution']
     validate_admission(admission)
     keys(execution, ['workflow_id', 'run_id', 'run_attempt', 'run_number', 'launcher', 'nonce'])
-    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id',
-                    'admission_artifact_id', 'check_run_id', 'input_manifest_sha256'])
     for field in ['workflow_id', 'run_id', 'run_attempt', 'run_number']:
         identifier(execution[field])
     digest(execution['launcher'])
     digest(execution['nonce'], 32)
-    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id',
-                  'admission_artifact_id', 'check_run_id']:
-        identifier(evidence[field])
-    digest(evidence['input_manifest_sha256'], 64)
-    require(receipt['qualification_id'] == hashlib.sha256(canonical_json(identity)).hexdigest(),
+    require(qualification_id == hashlib.sha256(canonical_json(identity)).hexdigest(),
             'qualification identity differs')
     require(admission['repository_id'] == policy.repository_id
             and admission['upstream_commit'] == policy.upstream_commit
@@ -201,7 +218,70 @@ def validate_receipt(receipt, policy, signed):
             and (signed.commit, signed.tree, signed.base, signed.head)
             == tuple(admission[field] for field in ['signed_merge', 'tree', 'base', 'head']),
             'admission does not match the verified signed merge')
-    return admission, execution, evidence
+    return admission, execution
+
+
+def _validate_receipt_evidence(evidence, *, version):
+    extra = ['activation_check_run_id'] if version == 2 else []
+    fields = ['prepare_job_id', 'admission_job_id', 'native_job_id',
+              'admission_artifact_id', 'check_run_id', 'input_manifest_sha256']
+    keys(evidence, fields + extra)
+    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id',
+                  'admission_artifact_id', 'check_run_id'] + extra:
+        identifier(evidence[field])
+    digest(evidence['input_manifest_sha256'], 64)
+    if version == 2:
+        return CheckBinding(evidence['check_run_id'], evidence['activation_check_run_id'])
+
+
+def validate_receipt(receipt, policy, signed):
+    """Legacy receipt shape; never a fallback for the explicit v2 validators."""
+    keys(receipt, ['identity', 'qualification_id', 'evidence'])
+    admission, execution = _validate_identity(receipt['identity'], receipt['qualification_id'],
+                                              policy, signed)
+    _validate_receipt_evidence(receipt['evidence'], version=1)
+    return admission, execution, receipt['evidence']
+
+
+def validate_admission_v2(value, policy, signed):
+    """Validate v2 structure, not the emitter, job, artifact or current authority."""
+    try:
+        keys(value, ['schema_version', 'identity', 'qualification_id',
+                     'input_manifest_sha256', 'checks'])
+        require(type(value['schema_version']) is int and value['schema_version'] == 2,
+                'unsupported admission envelope')
+        _validate_identity(value['identity'], value['qualification_id'], policy, signed)
+        digest(value['input_manifest_sha256'], 64)
+        keys(value['checks'], ['native_check_id', 'activation_check_id'])
+        return CheckBinding(**value['checks'])
+    except (KeyError, TypeError, ValueError, RecursionError) as error:
+        raise QualificationError('invalid v2 admission structure') from error
+
+
+def validate_receipt_v2(receipt, policy, signed):
+    """Explicit v2 envelope; preserve the existing identity hash and proof fields."""
+    try:
+        keys(receipt, ['schema_version', 'identity', 'qualification_id', 'evidence'])
+        require(type(receipt['schema_version']) is int and receipt['schema_version'] == 2,
+                'unsupported qualification envelope')
+        admission, execution = _validate_identity(receipt['identity'], receipt['qualification_id'],
+                                                  policy, signed)
+        _validate_receipt_evidence(receipt['evidence'], version=2)
+        return admission, execution, receipt['evidence']
+    except (KeyError, TypeError, ValueError, RecursionError) as error:
+        raise QualificationError('invalid v2 qualification structure') from error
+
+
+def match_admission_v2(admission_record, receipt, policy, signed):
+    """Match two validated structures; callers must authenticate both artifacts."""
+    binding = validate_admission_v2(admission_record, policy, signed)
+    _, _, evidence = validate_receipt_v2(receipt, policy, signed)
+    require(binding == CheckBinding(evidence['check_run_id'], evidence['activation_check_run_id'])
+            and canonical_json(admission_record['identity']) == canonical_json(receipt['identity'])
+            and admission_record['qualification_id'] == receipt['qualification_id']
+            and admission_record['input_manifest_sha256'] == evidence['input_manifest_sha256'],
+            'qualification differs from v2 admission')
+    return binding
 
 
 def verify_run(run, policy, execution):
@@ -264,13 +344,49 @@ def verify_native(report, receipt, policy):
     return measured['tests']
 
 
-def verify_qualification(api, policy, signed, *, artifact_id, archive, admission_archive):
-    """Verify a completed historical qualification, not current merge authorization.
+def verify_qualification(
+    api, policy, signed, *, artifact_id, archive, admission_archive
+):
+    """Verify a legacy historical qualification; never a fallback for v2."""
+    return _verify_qualification(
+        api,
+        policy,
+        signed,
+        artifact_id=artifact_id,
+        archive=archive,
+        admission_archive=admission_archive,
+        version=1,
+    )
+
+
+def verify_qualification_v2(
+    api, policy, signed, *, artifact_id, archive, admission_archive
+):
+    """Verify the exact admitted pair and native evidence, not current readiness."""
+    return _verify_qualification(
+        api,
+        policy,
+        signed,
+        artifact_id=artifact_id,
+        archive=archive,
+        admission_archive=admission_archive,
+        version=2,
+    )
+
+
+def _verify_qualification(
+    api, policy, signed, *, artifact_id, archive, admission_archive, version
+):
+    """Share provenance checks without selecting a version from untrusted input.
 
     The caller must run this under a wall-clock deadline and supply SignedMerge
     from verify_signed_merge(), never deserialize it from an untrusted receipt.
     """
     try:
+        require(
+            type(version) is int and version in {1, 2},
+            'unsupported verification version',
+        )
         require(api.repository == policy.repository, 'wrong API repository')
         artifact = api.get('actions/artifacts/' + str(identifier(artifact_id)))
         require(identifier(artifact['id']) == artifact_id and artifact['expired'] is False,
@@ -278,7 +394,8 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
         files = read_archive(archive, artifact,
                              {'qualification.json': MAX_RECEIPT_BYTES, 'report.json': MAX_REPORT_BYTES})
         receipt, report = files['qualification.json'], files['report.json']
-        admission, execution, evidence = validate_receipt(receipt, policy, signed)
+        validate = validate_receipt_v2 if version == 2 else validate_receipt
+        admission, execution, evidence = validate(receipt, policy, signed)
         run_id = execution['run_id']
         association = artifact['workflow_run']
         require(identifier(association['id']) == run_id
@@ -298,11 +415,25 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
                 and approval_association['head_sha'] == policy.launcher, 'wrong admission provenance')
         approval = read_archive(admission_archive, approval_artifact,
                                 {'admission.json': MAX_RECEIPT_BYTES})['admission.json']
-        require(canonical_json(approval) == canonical_json({
-                    'identity': receipt['identity'],
-                    'qualification_id': receipt['qualification_id'],
-                    'input_manifest_sha256': evidence['input_manifest_sha256']}),
-                'worker receipt differs from independently published admission')
+        if version == 2:
+            try:
+                binding = match_admission_v2(approval, receipt, policy, signed)
+            except QualificationError as error:
+                raise QualificationError(
+                    'worker receipt differs from independently published admission'
+                ) from error
+        else:
+            require(
+                canonical_json(approval)
+                == canonical_json(
+                    {
+                        'identity': receipt['identity'],
+                        'qualification_id': receipt['qualification_id'],
+                        'input_manifest_sha256': evidence['input_manifest_sha256'],
+                    }
+                ),
+                'worker receipt differs from independently published admission',
+            )
         run = api.get(f'actions/runs/{run_id}')
         verify_run(run, policy, execution)
         actor = run['actor']
@@ -340,15 +471,49 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
         require(merge['sha'] == admission['merge'] and merge['tree']['sha'] == signed.tree
                 and [parent['sha'] for parent in merge['parents']] == [signed.base, signed.head],
                 'GitHub merge differs from signed candidate')
-        check = api.get('check-runs/' + str(evidence['check_run_id']))
-        require(identifier(check['id']) == evidence['check_run_id']
+        if version == 2:
+            # The record module shares the primitives above; import after initialization.
+            from ci.native.check_records import CheckIdentity, validate_check
+
+            for check_id, head, name in [
+                (binding.native_check_id, signed.commit, policy.check_name),
+                (
+                    binding.activation_check_id,
+                    signed.head,
+                    f'Native KWin / activation #{admission["pr_number"]}',
+                ),
+            ]:
+                check = api.get('check-runs/' + str(check_id))
+                expected = CheckIdentity(
+                    policy.repository,
+                    policy.app_id,
+                    head,
+                    name,
+                    receipt['qualification_id'],
+                    run_id,
+                )
+                validate_check(
+                    check, expected, check_id, status='completed', conclusion='success'
+                )
+                require(
+                    ordered[3][0] <= timestamp(check['completed_at']) <= ordered[3][1],
+                    'App check completion is outside the authenticated report job',
+                )
+        else:
+            check = api.get('check-runs/' + str(evidence['check_run_id']))
+            require(
+                identifier(check['id']) == evidence['check_run_id']
                 and identifier(check['app']['id']) == policy.app_id
-                and check['name'] == policy.check_name and check['head_sha'] == signed.commit
+                and check['name'] == policy.check_name
+                and check['head_sha'] == signed.commit
                 and check['external_id'] == receipt['qualification_id']
-                and check['status'] == 'completed' and check['conclusion'] == 'success'
-                and check['details_url'] == f'https://github.com/{policy.repository}/actions/runs/{run_id}'
+                and check['status'] == 'completed'
+                and check['conclusion'] == 'success'
+                and check['details_url']
+                == f'https://github.com/{policy.repository}/actions/runs/{run_id}'
                 and ordered[3][0] <= timestamp(check['completed_at']) <= ordered[3][1],
-                'native App check does not match qualification')
+                'native App check does not match qualification',
+            )
         tests = verify_native(report, receipt, policy)
         verify_run(api.get(f'actions/runs/{run_id}'), policy, execution)
         inputs = admission['source']
@@ -356,6 +521,19 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
                                           admission['merge'], admission['payload_sha256'], inputs['tree'],
                                           inputs['sha256'], inputs['bytes'], admission['approver_id'],
                                           admission['upstream_commit'])
+        if version == 2:
+            return QualifiedEvidenceV2(
+                receipt['qualification_id'],
+                run_id,
+                signed,
+                admitted,
+                tests,
+                binding.native_check_id,
+                execution['run_number'],
+                binding.activation_check_id,
+                execution['nonce'],
+                evidence['native_job_id'],
+            )
         return QualifiedEvidence(receipt['qualification_id'], run_id, signed, admitted, tests,
                                  evidence['check_run_id'], execution['run_number'])
     except QualificationError:

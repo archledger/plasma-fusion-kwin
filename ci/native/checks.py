@@ -14,6 +14,8 @@ from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, build_opener
 
+from ci.native.check_journal import CheckJournal
+from ci.native.check_records import CheckIdentity, validate_check, validate_creation
 from ci.native.pagination import get_all
 from ci.native.proof_api import (
     NoRedirect,
@@ -234,7 +236,7 @@ def app_jwt(private_key, app_id, *, now=None):
 
 
 class CheckReporter:
-    def __init__(self, policy, token, run_id, before_write):
+    def __init__(self, policy, token, run_id, before_write, *, journal=None):
         self.policy = policy
         self._token = token
         self.reader = ProofAPI(policy.repository, token=token, max_calls=32)
@@ -243,9 +245,12 @@ class CheckReporter:
         )
         require(callable(before_write), 'missing coordination fence')
         self._before_write = before_write
+        self.run_id = identifier(run_id)
+        self.journal = journal
+        self._failed = False
 
     @classmethod
-    def from_key(cls, policy, private_key, run_id, before_write):
+    def from_key(cls, policy, private_key, run_id, before_write, *, journal=None):
         jwt = app_jwt(private_key, policy.app_id)
         result = _request(
             'POST',
@@ -266,7 +271,7 @@ class CheckReporter:
         require(
             type(token) is str and 0 < len(token) <= 4096, 'invalid installation token'
         )
-        return cls(policy, token, run_id, before_write)
+        return cls(policy, token, run_id, before_write, journal=journal)
 
     def _send(self, method, resource, body=None):
         require(
@@ -298,32 +303,51 @@ class CheckReporter:
         mismatched = [field for field, matches in checks.items() if not matches]
         if mismatched:
             raise _CheckResponseError(mismatched)
-        return identifier(value['id'])
+        check_id = identifier(value['id'])
+        return validate_check(
+            value,
+            self._expected(head, name, qid),
+            check_id,
+            status=status,
+            conclusion=conclusion,
+        )
+
+    def _expected(self, head, name, qid):
+        return CheckIdentity(
+            self.policy.repository, self.policy.app_id, head, name, qid, self.run_id
+        )
 
     def _identity(self, head, name, qid):
         digest(head)
         digest(qid, 64)
         require(
             name == self.policy.check_name
-            or re.fullmatch(r'Native KWin / activation #[1-9][0-9]*', name),
+            or (
+                name == getattr(self.policy, 'activation_name', None)
+                if getattr(self.policy, 'activation_name', None) is not None
+                else re.fullmatch(r'Native KWin / activation #[1-9][0-9]*', name)
+            ),
             'unexpected check name',
         )
+        return 'native' if name == self.policy.check_name else 'activation'
+
+    def _context(self, head, name, qid, phase):
+        require(not self._failed, 'check writer is unusable after an error')
+        role = self._identity(head, name, qid)
+        require(type(self.journal) is CheckJournal, 'missing one-shot check journal')
+        self.journal.check_context(qid, self.run_id, phase, role)
+        return role
 
     def begin(self, head, name, qid):
         try:
-            self._identity(head, name, qid)
+            role = self._context(head, name, qid, 'admit')
             checks = get_all(
                 self.reader,
                 f'commits/{head}/check-runs',
                 key='check_runs',
                 check_filter='all',
             )
-            matched = [
-                c
-                for c in checks
-                if c['name'] == name and c['app']['id'] == self.policy.app_id
-            ]
-            require(len(matched) <= 1, 'duplicate App-owned checks')
+            validate_creation(checks, self._expected(head, name, qid))
             body = {
                 'name': name,
                 'external_id': qid,
@@ -335,28 +359,38 @@ class CheckReporter:
                 },
             }
             self._before_write()
-            if matched:
-                require(
-                    matched[0]['head_sha'] == head, 'existing check has wrong commit'
+            self.journal.begin(role, 'create')
+            result = self._send('POST', 'check-runs', dict(body, head_sha=head))
+            check_id = self._check(result, head, name, qid, 'in_progress', None)
+            require(
+                self._check(
+                    self._send('GET', f'check-runs/{check_id}'),
+                    head,
+                    name,
+                    qid,
+                    'in_progress',
+                    None,
                 )
-                # Omitted fields can retain a previous terminal result. Refuse
-                # the write unless GitHub confirms both fields were cleared.
-                body.update(conclusion=None, completed_at=None)
-                result = self._send(
-                    'PATCH', f'check-runs/{identifier(matched[0]["id"])}', body
-                )
-                require(result['id'] == matched[0]['id'], 'updated check ID differs')
-            else:
-                result = self._send('POST', 'check-runs', dict(body, head_sha=head))
-            return self._check(result, head, name, qid, 'in_progress', None)
-        except (ValueError, KeyError, TypeError) as error:
+                == check_id,
+                'created check readback ID differs',
+            )
+            self.journal.confirm(check_id)
+            return check_id
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as error:
+            self._failed = True
             raise CheckWriteError(
                 'Cannot begin exact native check; reconcile any write'
             ) from error
 
     def complete(self, check_id, head, name, qid, *, success):
         try:
-            self._identity(head, name, qid)
+            role = self._context(head, name, qid, 'report')
             require(type(success) is bool, 'completion must be explicit')
             resource = f'check-runs/{identifier(check_id)}'
             require(
@@ -367,6 +401,7 @@ class CheckReporter:
                 'queried check ID differs',
             )
             self._before_write()
+            self.journal.begin(role, 'complete', check_id=check_id)
             conclusion = 'success' if success else 'failure'
             result = self._send(
                 'PATCH',
@@ -385,7 +420,27 @@ class CheckReporter:
                 == check_id,
                 'completed check ID differs',
             )
-        except (ValueError, KeyError, TypeError) as error:
+            require(
+                self._check(
+                    self._send('GET', resource),
+                    head,
+                    name,
+                    qid,
+                    'completed',
+                    conclusion,
+                )
+                == check_id,
+                'completed check readback ID differs',
+            )
+            self.journal.confirm(check_id)
+        except (
+            ValueError,
+            KeyError,
+            TypeError,
+            OSError,
+            subprocess.SubprocessError,
+        ) as error:
+            self._failed = True
             raise CheckWriteError(
                 'Cannot complete exact native check; reconcile any write'
             ) from error

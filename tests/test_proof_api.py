@@ -50,12 +50,34 @@ class ProofAPITest(unittest.TestCase):
         self.assertEqual(request.get_header('Authorization'), 'Bearer fixture-token-not-a-credential')
         self.assertEqual(timeout, 20)
 
+    def test_only_the_fixed_coordination_ref_endpoint_is_added(self):
+        self.api.get('git/ref/heads/native-gate-coordination')
+        request = self.opener.calls[0][0]
+        self.assertEqual(request.get_method(), 'GET')
+        self.assertEqual(
+            request.full_url,
+            'https://api.github.com/repos/owner/downstream/git/ref/heads/native-gate-coordination',
+        )
+        self.opener.calls.clear()
+        for resource in [
+            'git/ref/heads/other',
+            'git/refs/heads/native-gate-coordination',
+            'git/ref/heads/native-gate-coordination/extra',
+            'git/ref/heads/native-gate-coordination?x=1',
+            'git/ref/heads/native%2dgate-coordination',
+        ]:
+            with self.subTest(resource=resource), self.assertRaises(ProofReadError):
+                self.api.get(resource)
+        self.assertEqual(self.opener.calls, [])
+
     def test_public_read_does_not_add_authorization(self):
         api = ProofAPI('owner/downstream')
         api._opener = self.opener
         api.get('')
         request = self.opener.calls[0][0]
-        self.assertEqual(request.full_url, 'https://api.github.com/repos/owner/downstream')
+        self.assertEqual(
+            request.full_url, 'https://api.github.com/repos/owner/downstream'
+        )
         self.assertIsNone(request.get_header('Authorization'))
 
     def test_all_check_history_filter_is_explicit(self):
