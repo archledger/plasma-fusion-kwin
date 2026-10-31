@@ -180,13 +180,13 @@ def validate_receipt(receipt, policy, signed):
     admission, execution = identity['admission'], identity['execution']
     validate_admission(admission)
     keys(execution, ['workflow_id', 'run_id', 'run_attempt', 'run_number', 'launcher', 'nonce'])
-    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id', 'reporter_job_id',
+    keys(evidence, ['prepare_job_id', 'admission_job_id', 'native_job_id',
                     'admission_artifact_id', 'check_run_id', 'input_manifest_sha256'])
     for field in ['workflow_id', 'run_id', 'run_attempt', 'run_number']:
         identifier(execution[field])
     digest(execution['launcher'])
     digest(execution['nonce'], 32)
-    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id', 'reporter_job_id',
+    for field in ['prepare_job_id', 'admission_job_id', 'native_job_id',
                   'admission_artifact_id', 'check_run_id']:
         identifier(evidence[field])
     digest(evidence['input_manifest_sha256'], 64)
@@ -316,11 +316,15 @@ def verify_qualification(api, policy, signed, *, artifact_id, archive, admission
         require(type(jobs) is list and type(inventory['total_count']) is int
                 and inventory['total_count'] == len(jobs) == 4, 'incomplete or unexpected job inventory')
         require(len({identifier(job['id']) for job in jobs}) == 4, 'duplicate qualification job')
+        require({job['name'] for job in jobs} == {'prepare', 'admit', 'native', 'report'},
+                'unexpected qualification jobs')
         by_id = {job['id']: job for job in jobs}
+        by_name = {job['name']: job for job in jobs}
         ordered = []
         for role, field in [('prepare', 'prepare_job_id'), ('admit', 'admission_job_id'),
-                            ('native', 'native_job_id'), ('report', 'reporter_job_id')]:
-            job = by_id[evidence[field]]
+                             ('native', 'native_job_id'), ('report', None)]:
+            # The native artifact exists before the report job may be allocated.
+            job = by_name['report'] if field is None else by_id[evidence[field]]
             require(job['name'] == role and identifier(job['run_id']) == run_id
                     and type(job['run_attempt']) is int and job['run_attempt'] == 1
                     and job['head_sha'] == policy.launcher and job['status'] == 'completed'

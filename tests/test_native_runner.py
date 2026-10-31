@@ -183,14 +183,20 @@ class NativeRunnerTest(unittest.TestCase):
             with tempfile.TemporaryFile() as archive, \
                     patch.object(run_native_guest, 'load_manifest', return_value=types.SimpleNamespace(expected_tree='a' * 40)), \
                     patch.object(run_native_guest, 'verify_image_directory', return_value={'files': []}), \
-                    patch.object(run_native_guest, 'stage_image', side_effect=stage), \
+                    patch.object(run_native_guest, 'stage_image', side_effect=stage) as stage_image, \
                     patch.object(run_native_guest, 'PAYLOAD', ()):
-                run_native_guest.pack_inputs(root, root, root/'base', archive, invocation=invocation)
+                _, _, manifest_sha = run_native_guest.pack_inputs(root, root, root/'base', archive, invocation=invocation)
                 with tarfile.open(fileobj=archive, mode='r') as packed:
                     data = packed.extractfile('native-input/invocation.json').read()
                     self.assertEqual(json.loads(data), invocation)
                     sums = packed.extractfile('native-input/SHA256SUMS').read().decode()
                     self.assertIn(hashlib.sha256(data).hexdigest() + '  invocation.json\n', sums)
+                with tempfile.TemporaryFile() as preparation, \
+                        patch.object(run_native_guest, 'load_manifest', side_effect=AssertionError('must use admitted source')):
+                    _, _, prepared_sha = run_native_guest.pack_inputs(root, root, None, preparation,
+                        invocation=invocation, expected_source=inputs['source'])
+                self.assertEqual(prepared_sha, manifest_sha)
+                stage_image.assert_called_once()
 
     def test_native_action_forwards_complete_admission_and_rejects_partial_input(self):
         action = Path(__file__).resolve().parents[1] / '.github/actions/native-guest/action.yml'

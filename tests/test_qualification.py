@@ -42,6 +42,10 @@ class API:
 
 
 class QualificationTest(unittest.TestCase):
+    def test_reporter_id_is_derived_from_authenticated_job_inventory(self):
+        self.api.responses['actions/runs/500/attempts/1/jobs']['jobs'][3]['id'] = 1703
+        self.verify()
+
     def setUp(self):
         self.policy = QualificationPolicy('owner/downstream', 100, 200, 'a' * 40, 'A' * 40,
                                           ('fixture-package',), app_id=300)
@@ -61,7 +65,7 @@ class QualificationTest(unittest.TestCase):
             },
             'qualification_id': '',
             'evidence': {'prepare_job_id': 700, 'admission_job_id': 701,
-                         'native_job_id': 702, 'reporter_job_id': 703, 'admission_artifact_id': 901,
+                          'native_job_id': 702, 'admission_artifact_id': 901,
                          'check_run_id': 800, 'input_manifest_sha256': '4' * 64},
         }
         jobs = [self.job(700, 'prepare', '00:00:00', '00:00:30'),

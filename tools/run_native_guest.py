@@ -93,20 +93,24 @@ def output_tail(path):
         return output.read(65536).decode(errors='replace')
 
 
-def pack_inputs(repo, prepared, base, archive, *, invocation):
+def pack_inputs(repo, prepared, base, archive, *, invocation, expected_source=None):
     validate_invocation(invocation)
     inputs = json.loads((prepared / 'inputs.json').read_text())
-    manifest = load_manifest(repo)
-    require(inputs['source']['tree'] == manifest.expected_tree, 'prepared source tree differs')
+    if expected_source is None:
+        require(inputs['source']['tree'] == load_manifest(repo).expected_tree, 'prepared source tree differs')
+    else:
+        require(json.dumps(inputs['source'], sort_keys=True) == json.dumps(expected_source, sort_keys=True),
+                'prepared source differs from admission')
     digest, size = regular_digest(prepared / 'patched-source.tar', 128 * 1024**2)
     require(digest == inputs['source']['sha256'] and size == inputs['source']['bytes'], 'prepared source differs')
     image = verify_image_directory(prepared / 'builder-image')
     require(image == inputs['builder'], 'prepared builder identity differs')
     packages = sorted(line for line in (repo / 'ci/builder/packages.lock').read_text().splitlines()
                       if line and not line.startswith('#'))
-    stage_image(base, archive)
+    if base is not None:
+        stage_image(base, archive)
     sums, directories = [], set()
-    with tarfile.open(fileobj=archive, mode='a') as tar:
+    with tarfile.open(fileobj=archive, mode='a' if base is not None else 'w') as tar:
         def directory(path):
             for parent in reversed([path, *path.parents]):
                 name = parent.as_posix()
@@ -148,7 +152,7 @@ def pack_inputs(repo, prepared, base, archive, *, invocation):
 
 
 def run_guest(repo, prepared, base, output, mode, budget, *, qualification_id=None,
-              nonce=None, expected_input_manifest=None):
+              nonce=None, expected_input_manifest=None, expected_source=None):
     require(mode in {'render', 'native'} and 0 < budget <= 4200, 'invalid native execution budget')
     bound = any(value is not None for value in [qualification_id, nonce, expected_input_manifest])
     require(not bound or all(value is not None for value in [qualification_id, nonce, expected_input_manifest]),
@@ -193,7 +197,8 @@ def run_guest(repo, prepared, base, output, mode, budget, *, qualification_id=No
             report['engine_security_options'] = security
             require(shutil.disk_usage(output).free >= 12 * 1024**3, 'insufficient temporary storage')
             with tempfile.TemporaryFile(dir=temporary) as archive:
-                inputs, packages, manifest_sha = pack_inputs(repo, prepared, base, archive, invocation=invocation)
+                inputs, packages, manifest_sha = pack_inputs(repo, prepared, base, archive,
+                    invocation=invocation, expected_source=expected_source)
                 report['input_manifest_sha256'] = manifest_sha
                 report['source'] = inputs['source']
                 require(not bound or manifest_sha == expected_input_manifest, 'admitted input manifest differs')

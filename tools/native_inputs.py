@@ -94,6 +94,18 @@ def archive_tree(source, expected_tree, output):
     return {'tree': expected_tree, 'sha256': digest, 'bytes': size}
 
 
+def prepare_image(output):
+    """Reuse the pinned anonymous image acquisition for admitted source inputs."""
+    with tempfile.TemporaryDirectory(prefix='native-auth-', dir=output) as directory:
+        auth = Path(directory) / 'auth.json'
+        auth.write_text('{"auths":{}}\n')
+        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': directory, 'LANG': 'C.UTF-8'}
+        subprocess.run(['skopeo', 'copy', '--authfile', str(auth), '--src-no-creds', '--preserve-digests',
+                        'docker://' + BUILDER_REFERENCE, 'dir:' + str(output / 'builder-image')],
+                       env=env, check=True, timeout=300)
+    return verify_image_directory(output / 'builder-image')
+
+
 def prepare(root, output):
     output.mkdir(mode=0o700)
     manifest = load_manifest(root)
@@ -102,14 +114,7 @@ def prepare(root, output):
         fetch_source(source, manifest)
         patch_result = apply_patchset(source, manifest)
         archive = archive_tree(source, manifest.expected_tree, output / 'patched-source.tar')
-    with tempfile.TemporaryDirectory(prefix='native-auth-', dir=output) as directory:
-        auth = Path(directory) / 'auth.json'
-        auth.write_text('{"auths":{}}\n')
-        env = {'PATH': os.environ.get('PATH', '/usr/bin:/bin'), 'HOME': directory, 'LANG': 'C.UTF-8'}
-        subprocess.run(['skopeo', 'copy', '--authfile', str(auth), '--src-no-creds', '--preserve-digests',
-                        'docker://' + BUILDER_REFERENCE, 'dir:' + str(output / 'builder-image')],
-                       env=env, check=True, timeout=300)
-    image = verify_image_directory(output / 'builder-image')
+    image = prepare_image(output)
     result = {'source': archive, 'patchset': patch_result, 'builder': image}
     (output / 'inputs.json').write_text(json.dumps(result, indent=2) + '\n')
     return result
