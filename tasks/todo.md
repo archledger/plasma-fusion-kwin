@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-09 and checkpoints B/C are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-10 and source checkpoints A/B/C are complete. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -223,7 +223,7 @@ data; they do not qualify live GitHub behavior or native execution.
   implemented contracts; describe unresolved live gates and exact approval scope.
 - [x] Run full source validation, pinned Actionlint/REUSE and exact public-source
   patch application; resolve scoped review findings and retain evidence.
-- [ ] Prepare signed source commits and a reviewable source-only PR under existing
+- [x] Prepare signed source commits and a reviewable source-only PR under existing
   attribution rules. Do not merge or start any operational gate.
 
 Dependencies: FC-09. Scope: `docs/CHECK-LIFECYCLE-PROBE.md`,
@@ -235,7 +235,9 @@ Local FC-10 source validation and documentation review passed: 569 tests,
 Ruff, compilation, all 11 workflows through pinned Actionlint, REUSE 127/127,
 local links and exact pinned public-source patch application. Documentation
 also aligns the adjacent `MERGE-READINESS.md` guide and current plan status.
-Source-only PR publication is the remaining closeout step; no live gate is run.
+The signed source series is published in draft [PR #15](https://github.com/archledger/plasma-fusion-kwin/pull/15).
+Hosted source-check status is recorded on that PR. No live gate has been run;
+merge and operational approvals remain outside this completed source plan.
 
 ### Outside this plan
 

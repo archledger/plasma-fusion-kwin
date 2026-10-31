@@ -98,9 +98,10 @@ approval of the [specification](../docs/FRESH-CHECK-LIFECYCLE.md).
 Active checklist: [FC-01 through FC-10](todo.md#fresh-check-lifecycle-tasks).
 The completed hosted qualification above is not repeated or reclassified.
 
-FC-01 through FC-09 and source checkpoints A through C are complete locally.
-Continue at FC-10 documentation, final validation and source-only PR closeout;
-no completed source slice authorizes a live operation.
+FC-01 through FC-10 and source checkpoints A through C are complete. The signed
+source series is in draft [PR #15](https://github.com/archledger/plasma-fusion-kwin/pull/15).
+Review and any separately approved merge come next; no completed source slice
+authorizes a live operation.
 
 Historical checkpoint A covered only the three foundations: 456 tests and 11
 targeted mutations passed before producer integration. It is not the current
