@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 
-from ci.native.checks import CheckReporter
+from ci.native.checks import CheckReporter, check_error_details
 from ci.native.proof_api import ProofAPI
 from ci.native.qualification import canonical_json, digest, identifier, require
 
@@ -220,7 +220,11 @@ def exercise(client, head, run_id, save):
         OSError,
         subprocess.SubprocessError,
     ) as error:
-        report.update(failed_phase=phase, error_type=type(error).__name__)
+        report.update(
+            failed_phase=phase,
+            error_type=type(error).__name__,
+            diagnostics=check_error_details(error),
+        )
         save(report)
         raise
 
@@ -277,11 +281,17 @@ def main():
                     'success': False,
                     'failed_phase': phase,
                     'error_type': type(error).__name__,
+                    'diagnostics': check_error_details(error),
                 },
             )
         print(
             json.dumps(
-                {'success': False, 'phase': phase, 'error_type': type(error).__name__}
+                {
+                    'success': False,
+                    'phase': phase,
+                    'error_type': type(error).__name__,
+                    'diagnostics': check_error_details(error),
+                }
             )
         )
         return 1
