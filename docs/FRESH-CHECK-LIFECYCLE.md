@@ -3,7 +3,8 @@
 # Specification: fresh checks for each trusted operation
 
 Status: contracts and implementation plan approved by the owner on 2026-10-31;
-implementation is in progress. No live operation is authorized by this document.
+source implementation and regression coverage are complete. Live qualification
+remains separately gated; no live operation is authorized by this document.
 Baseline: `7714ca719b6a1a79c3e6348ffa13a601292cee35`.
 
 ## Objective and evidence
@@ -274,5 +275,5 @@ text has not received a new independent or cross-model review.
 ## Sources
 
 - [GitHub Checks REST API, version 2022-11-28](https://docs.github.com/en/rest/checks/runs?apiVersion=2022-11-28): creation, update and listing contracts. The retained retrieval includes the suite and history limits.
-- [Existing lifecycle probe](CHECK-LIFECYCLE-PROBE.md): historical reset experiment, superseded by the recorded HTTP 422 result for that request.
+- [Fresh-pair lifecycle probe](CHECK-LIFECYCLE-PROBE.md): bounded API sequence and historical HTTP 422 reset diagnosis.
 - [Qualification evidence](QUALIFICATION-EVIDENCE.md), [read-only finalizer](READ-ONLY-FINALIZER.md), and [integration boundaries](MAIN-INTEGRATION.md): existing contracts that implementation must update without weakening unrelated gates.

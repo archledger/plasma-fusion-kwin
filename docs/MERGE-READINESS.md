@@ -2,8 +2,8 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Read-only merge-readiness observations
 
-`ci/native/current_policy.py` combines current PR association, classic branch
-protection, required checks, reviews and activation-pointer observations. It
+`ci/native/current_policy.py` combines verified v2 evidence and current signed
+authority with PR association, classic branch protection, checks and reviews. It
 returns a `ReadinessSnapshot`, not permission to push. The separate manual
 producer, fenced activation writer and read-only finalizer CLI are implemented;
 their operational qualification and finalizing main-write integration remain
@@ -13,9 +13,10 @@ pending. This module does not enable them.
 
 The current policy must require the native context from the expected App, strict
 up-to-date checks and administrator enforcement. Every required context must
-have one unambiguous positive App ID and one successful check on the exact signed
-merge. Legacy/status-only mappings, missing mappings, conflicting contexts,
-skipped/neutral results and duplicate matching App checks are refused.
+have one unambiguous positive App ID. The native pair is selected by its exact
+admitted IDs; unrelated required providers still need exactly one matching
+successful check on the signed merge. Legacy/status-only mappings, missing
+mappings, conflicting contexts and skipped/neutral results are refused.
 
 The evaluator refuses force pushes, deletion, a locked target, linear-history
 requirements, conversation-resolution requirements, push restrictions, active
@@ -58,28 +59,36 @@ Check, review and commit lists are explicitly paginated with bounded page sizes
 and counts. A full final allowed page is not proof of completion. Object lists
 must retain a consistent total count and contain every unique record.
 
-The native check ID must equal the ID retained from historical qualification,
-and its App, context, signed commit, QID and run URL must match that proof.
+The native ID and the distinct activation ID come from authenticated v2
+admission and qualification. Each direct read must match its expected App,
+context, commit, QID, canonical run URL and successful terminal state. Native
+targets the signed merge; `Native KWin / activation #<PR number>` targets the PR
+head. Neither ID can be replaced by a scan result, newest record or old success.
 
-A distinct App-owned check on the PR head supplies current activation:
-`Native KWin / activation #<PR number>`. Exactly one matching App/context pair
-must be successful, on that head, with the verified QID and exact trusted run URL.
-A missing, duplicate, pending, failed or different-QID pointer blocks the old
-native result, including when a new signed candidate uses the same PR head/base.
-The native check and activation pointer are both required; neither substitutes
-for the other.
+Bounded inventories reject observed duplicate IDs, conflicting QID/run mappings,
+malformed matching records and other nonterminal records. Older well-formed
+terminal records under the native contexts remain inert history. This allowance
+does not apply to unrelated required providers and does not prove global history
+completeness. Missing or pruned admitted evidence fails closed.
 
-The evaluator rereads check/pointer state, protection, reviews and PR association,
+The [read-only command](READ-ONLY-FINALIZER.md) requires an independent operator
+anchor and authenticates the fixed coordination tip before and after evaluation.
+Running/finalizing state must match the verified nonce, QID, run/number, native
+job and policy-bound operation. Idle state must be the same qualified-only
+completion with no main result. A new reserved/dispatching/granted operation or
+a failed/cancelled completion blocks old successful evidence.
+
+The evaluator compares both complete check snapshots, protection, reviews and PR association,
 and confirms the qualification has not become a rerun. These reads reduce stale
 observations but are not a transaction or lock.
 
 ## Unresolved write boundary
 
-The manual producer and fenced App client implement fresh admission, confirmation
-of the pending pointer before native work, and serialized pointer/result writes.
-They stop on ambiguous outcomes rather than automatically retrying or allowing
-an older reporter to overwrite newer activation. These behaviors still need
-operational qualification, including completed-check reopening.
+The manual producer and fenced App client implement fresh paired admission,
+confirmation before native work, and journaled exact-ID completion. They stop on
+ambiguous outcomes rather than retrying or letting an older reporter overwrite
+a new operation. The fresh-pair API lifecycle and complete producer still need
+separately approved live qualification. Completed checks are never reopened.
 
 Finalization must also serialize against activation. A local Git base lease does
 not prevent the pointer changing after its last read. Therefore this read-only

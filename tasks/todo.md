@@ -219,9 +219,9 @@ data; they do not qualify live GitHub behavior or native execution.
 
 ### FC-10: Documentation and source closeout
 
-- [ ] Update lifecycle, evidence, read-only command and integration docs to the
+- [x] Update lifecycle, evidence, read-only command and integration docs to the
   implemented contracts; describe unresolved live gates and exact approval scope.
-- [ ] Run full source validation, pinned Actionlint/REUSE and exact public-source
+- [x] Run full source validation, pinned Actionlint/REUSE and exact public-source
   patch application; resolve scoped review findings and retain evidence.
 - [ ] Prepare signed source commits and a reviewable source-only PR under existing
   attribution rules. Do not merge or start any operational gate.
@@ -230,6 +230,12 @@ Dependencies: FC-09. Scope: `docs/CHECK-LIFECYCLE-PROBE.md`,
 `docs/QUALIFICATION-EVIDENCE.md`, `docs/READ-ONLY-FINALIZER.md`,
 `docs/MAIN-INTEGRATION.md`. Progress updates to this checklist are administrative,
 not a license to broaden an implementation slice.
+
+Local FC-10 source validation and documentation review passed: 569 tests,
+Ruff, compilation, all 11 workflows through pinned Actionlint, REUSE 127/127,
+local links and exact pinned public-source patch application. Documentation
+also aligns the adjacent `MERGE-READINESS.md` guide and current plan status.
+Source-only PR publication is the remaining closeout step; no live gate is run.
 
 ### Outside this plan
 

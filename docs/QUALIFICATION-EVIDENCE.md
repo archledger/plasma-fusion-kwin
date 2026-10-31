@@ -2,10 +2,14 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Historical qualification evidence contract
 
-`ci/native/qualification.py` verifies admission and native evidence for one
-completed trusted workflow. It is a read-only library, not an admission issuer,
-merge command or enabled native PR workflow. Passing this check does not prove
-that the PR, reviews or protection settings are still current.
+`verify_qualification_v2()` in `ci/native/qualification.py` verifies admission,
+both App checks and native evidence for one completed trusted workflow. It is
+a read-only library, not an admission issuer or merge command. Passing it does
+not prove that the signed operation, PR, reviews or protections are current.
+
+The explicit legacy `verify_qualification()` entry point remains available for
+historical v1 inspection. The producer, coordinator and current read-only
+readiness path use v2; none falls back to legacy or missing-version evidence.
 
 The returned `ProducerAttestedInputs` explicitly distinguishes issuer assertions
 from independently checked facts. In particular, the historical verifier does
@@ -40,14 +44,15 @@ checked before the contents are parsed.
 
 A separate `native-admission-<run-id>-1` artifact contains only `admission.json`.
 Its API digest is checked independently, and its creation must precede the
-native job within the admission job's interval. Its identity, qualification ID
-and expected input-manifest digest must match the worker receipt exactly. The
-native worker cannot replace that earlier admission with its own checksum claim.
+native job within the admission job's interval. Its identity, qualification ID,
+input-manifest digest and exact check pair must match the worker receipt. The
+native worker cannot replace the earlier admission with its own checksum claim.
 
-The version-1 receipt has exactly three top-level fields:
+The v2 receipt has exactly four top-level fields:
 
 | Field | Meaning |
 | --- | --- |
+| `schema_version` | Integer `2`; missing, boolean and legacy versions are rejected. |
 | `identity` | Version, immutable admission and execution identity. |
 | `qualification_id` | SHA-256 of the canonical `identity` JSON. |
 | `evidence` | Concrete job/check IDs and executed input-manifest digest. |
@@ -65,12 +70,19 @@ nonce. The controller's serial evidence must use that nonce; a worker cannot
 relabel an older report by changing only its outer qualification ID.
 
 `evidence` records prepare/admission/native job IDs, the separate
-admission artifact ID, the App check ID and the input-manifest SHA-256. These
+admission artifact ID, `check_run_id` for the native check,
+`activation_check_run_id` for the activation check, and the input-manifest SHA-256. These
 concrete IDs are outside the identity hash so a
 producer can allocate jobs and checks without a circular identity calculation.
 They are independently checked against authenticated API records.
 The reporter job ID is derived from the authenticated four-job inventory after
 the run finishes: it need not exist when the native job uploads its receipt.
+
+The v2 admission has exactly `schema_version`, `identity`, `qualification_id`,
+`input_manifest_sha256` and `checks`. Its `schema_version` is integer `2` and
+`checks` contains exactly `native_check_id` and `activation_check_id`. The two
+IDs must be distinct positive integers and match the result receipt exactly.
+The inner `identity.schema_version` and QID formula remain version 1.
 
 ## Provenance and native checks
 
@@ -84,10 +96,11 @@ This initial contract requires exactly four jobs named `prepare`, `admit`,
 must match the complete returned list; a truncated page is refused. Admission
 must follow isolated preparation and finish before native execution, which must
 finish before reporting. Result-artifact
-creation must fall within the native job, and App-check completion within the
-reporter job. The check must have the pinned App identity/name, final signed
-commit, qualification ID and run URL. A final run read rejects a newly started
-rerun.
+creation must fall within the native job, and both App-check completions within
+the reporter job. The native check targets the final signed merge; the
+`Native KWin / activation #<PR-number>` check targets the PR head. Each direct
+ID read must match the pinned App, expected name/commit, QID, canonical run URL
+and successful terminal state. A final run read rejects a newly started rerun.
 
 The final signed merge and GitHub synthetic merge must have the same tree and
 ordered parents. The prepared source, qualification ID and input-manifest digest
@@ -123,14 +136,30 @@ qualification/input identities into the worker, and produce fresh evidence.
 It must never obtain the admission or its expected source checksum from guest
 output. Checksums produced by an untrusted preparation step are not sufficient.
 
+Admission creates a fresh pair with POST, verifies each returned ID and direct
+readback, then publishes v2 admission only after checking the complete pair and
+current ownership. Completed checks are never reset. The native job authenticates
+that admission and checks both exact IDs before claiming and immediately before
+execution. Reporting independently reads the authenticated admission pair;
+native output and list ordering cannot choose replacement IDs.
+
+Each write requires persisted intent in a private one-shot journal, followed by
+a validated acknowledgment. The `admit` and `report` jobs attempt separate
+`native-check-journal-<run-id>-<attempt>-<phase>` uploads, including on failure.
+These journals are diagnostics, not admission or restart authority. Normal
+admission remains success-only, and an upload failure cannot enable native work.
+Partial create, failed publication or uncertain completion remains held, with no
+automatic retry, adoption or release.
+
 The remaining finalizer must compose the current-association gate with admission revocation,
 attempt authority, reviews and protection settings immediately before its
 conditional update. No successful historical proof grants permission to bypass
-those checks. Existing qualification artifacts without this receipt/report
-binding are historical evidence, not interchangeable version-1 proofs.
+those checks. Existing qualification artifacts without this v2 receipt/admission
+binding remain historical evidence, not interchangeable current proofs.
 
-Tests use synthetic API records and native reports with real parsers. They do
-not claim a new guest execution, real admission issuance or GitHub merge test.
+Tests include serialized artifacts and real disposable signatures, with synthetic
+API/native data. They do not claim a new guest execution, live admission issuance
+or GitHub merge test.
 
 ## Native-stage assembly
 
@@ -143,7 +172,7 @@ and the runner refuses a different input manifest or returned invocation.
 
 Calls without all three inputs are either rejected (partial input) or remain
 the legacy standalone qualification mode (all absent). Standalone mode does not
-produce a version-1 PR qualification merely because its tests pass. The outer
+produce a v2 PR qualification merely because its tests pass. The outer
 container/VM boundary and cleanup requirements are unchanged.
 
 The four-job producer in `trusted-native.yml` uses these existing pieces:
@@ -151,11 +180,11 @@ The four-job producer in `trusted-native.yml` uses these existing pieces:
 | Job | Existing implementation to reuse | Connection |
 | --- | --- | --- |
 | `prepare` | Candidate association and pinned source tools | Only manifest/patch blobs from the verified signed merge are copied; application is isolated from host credentials and devices. |
-| `admit` | Admission schema and signed coordination reader | A run-bound grant precedes the independent App checks and immutable admission artifact. |
-| `native` | Authenticated claim, one-shot guard and native runner | The accepted running claim gates execution; source, QID, nonce and manifest are checked again. |
-| `report` | Native parsers and App check client | Same-attempt source/evidence validation precedes a fenced App result update. |
+| `admit` | Admission schema and signed coordination reader | A run-bound grant precedes fresh, journaled App checks and v2 admission publication. |
+| `native` | Authenticated claim, one-shot guard and native runner | The accepted running claim gates execution; source, pair, QID, nonce and manifest are checked again. |
+| `report` | Native parsers and App check client | Authenticated v2 admission supplies both IDs for fenced, journaled completion. |
 
-Do not replace these missing joins with placeholder jobs or weaken the four-job,
+Do not replace these joins with placeholder jobs or weaken the four-job,
 main-branch, signature, admission or cleanup checks to make a draft workflow pass.
 The workflow is manual and main-only, with the existing protected reporting
 environment only on `admit` and `report`. Its ordinary token has Contents-read
@@ -173,10 +202,10 @@ duplicate dispatches from racing activation. The native job then requests and
 waits for its own one-shot running claim. Native completion is verified through
 the complete qualification proof, not the no-op acknowledgement format.
 
-Source/fixture validation is not a deployment qualification. Production cutover,
-the coordinator dispatch/release procedure, safe check reopening against the
-real App, and one real end-to-end native proof remain activation gates. The
-workflow is not installed on main or dispatched by this change.
+Source/fixture validation is not deployment qualification. Installing this v2
+source on main, reconciling the held old-contract operation, the separately
+approved fresh-pair API sequence and a new end-to-end native proof remain gates.
+No source-only PR dispatches the manual workflow or rewrites old evidence.
 
 ## Maintainer coordinator
 
@@ -186,12 +215,15 @@ service. Its default is a preflight with no signing, dispatch or remote writes:
 ```sh
 python3 -m tools.trusted_native coordinate \
   --source "$TRUSTED_LOCAL_REPO" --policy "$TRUSTED_POLICY" \
-  --keyring "$TRUSTED_PUBLIC_KEYRING" --admission "$APPROVED_ADMISSION" \
+  --keyring "$TRUSTED_PUBLIC_KEYRING" --admission "$APPROVED_INNER_ADMISSION" \
   --state "$EXPECTED_IDLE_STATE"
 ```
 
-The policy has the same fields and signoff as the read-only verifier. The
-admission is the complete operator-approved object described above. The state
+The policy has the same fields and signoff as the read-only verifier. Here,
+`--admission` means a JSON file containing the operator-approved inner
+`identity.admission` object, not a v2 `admission.json` envelope or artifact ZIP.
+By contrast, `verify_native_proof.py --admission` takes the downloaded admission
+ZIP containing that envelope. The state
 file has exactly the expected `commit`, `parent`, `generation`, `epoch` and
 `cutover_digest` anchors of an existing signed idle record. Production bootstrap
 and its cutover evidence are separate: the coordinator never creates a missing
@@ -200,13 +232,15 @@ authority ref.
 After separate operational approval, `--apply --journal NEW_FILE` acquires that
 exact idle state, dispatches one main-branch run, grants only its authenticated
 admission request and native claim, and waits for the complete proof. It returns
-to idle as `qualified-only` only after success, cleanup and current association
-are verified. It never updates main. Any failure or unknown outcome leaves
+to idle as `qualified-only` only after v2 success, cleanup and current association
+are verified. Completion must match the issued QID, run/number, nonce, native job
+and signed merge. It never updates main. Any failure or unknown outcome leaves
 coordination held; the journal records attempted transitions. There is no
 automatic retry, expiry, takeover or recovery path.
 
 The native artifact omits `reporter_job_id`: that job may not have been allocated
 yet. The final verifier derives the report job from the authenticated, exact
 four-job inventory and still requires its source, attempt, success and timing.
-This corrects the pre-release receipt contract; no historical artifact is
-rewritten or promoted to a new proof.
+No historical artifact is rewritten or promoted to a new proof. Current
+readiness additionally requires the trusted coordination anchor and exact
+signed-operation predicates in [the read-only command](READ-ONLY-FINALIZER.md).

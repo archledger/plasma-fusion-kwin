@@ -2,7 +2,7 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Hosted native KWin qualification plan
 
-The completed hosted qualification below is retained. The current proposed
+The completed hosted qualification below is retained. The current source
 work is [Fresh-check lifecycle implementation](#fresh-check-lifecycle-implementation).
 
 Status: the owner approved this bounded plan, including the 75-minute hosted job
@@ -98,9 +98,13 @@ approval of the [specification](../docs/FRESH-CHECK-LIFECYCLE.md).
 Active checklist: [FC-01 through FC-10](todo.md#fresh-check-lifecycle-tasks).
 The completed hosted qualification above is not repeated or reclassified.
 
-Checkpoint A is complete: the three foundations pass 456 tests and 11 targeted
-mutation checks, with scoped review findings resolved. Production integration
-has not started; continue at FC-04 without treating these helpers as a live fix.
+FC-01 through FC-09 and source checkpoints A through C are complete locally.
+Continue at FC-10 documentation, final validation and source-only PR closeout;
+no completed source slice authorizes a live operation.
+
+Historical checkpoint A covered only the three foundations: 456 tests and 11
+targeted mutations passed before producer integration. It is not the current
+resumption point. The active checklist records the later completed slices.
 
 ### Objective and boundaries
 
@@ -143,7 +147,7 @@ small modules are justified only for shared validation or journal ownership.
 | --- | --- | --- | --- |
 | FC-01 | Exact record identity and visible-conflict rules | None | Proposed `ci/native/check_records.py`, `tests/test_check_records.py`. |
 | FC-02 | One-shot write-intent journal with bounded failure evidence | None | Proposed `ci/native/check_journal.py`, `tests/test_check_journal.py`. |
-| FC-03 | Strict v2 admission/result validators and verified binding data | None | `ci/native/qualification.py`, proposed `tests/test_check_evidence.py`. |
+| FC-03 | Strict v2 admission/result validators and verified binding data | None | `ci/native/qualification.py`, `tests/test_check_evidence.py`. |
 | FC-04 | Create-only journaled client and real-run API-only probe | FC-01–03 | `ci/native/checks.py`, `tools/probe_check_lifecycle.py`, their two test files and `.github/workflows/check-lifecycle-probe.yml`. |
 | FC-05 | Producer uses admitted IDs and exports partial-write evidence | FC-04 | `ci/native/producer.py`, `.github/workflows/trusted-native.yml`, `tests/test_producer.py`, `tests/test_workflow.py`. |
 | FC-06 | Final qualification verifies both checks and coordinator uses v2 only | FC-03, FC-05 | `ci/native/qualification.py`, `ci/native/coordinator.py`, `tests/test_qualification.py`, `tests/test_coordinator.py`, `tests/test_check_evidence.py`. |
