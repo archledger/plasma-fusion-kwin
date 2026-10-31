@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-04 are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-05 are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -101,16 +101,22 @@ they cannot write checks without the new journal.
 
 ### FC-05: Producer admission and partial-failure binding
 
-- [ ] Publish v2 admission only after both fresh IDs are verified; native and
+- [x] Publish v2 admission only after both fresh IDs are verified; native and
   report jobs consume that exact pair and never scan to adopt a replacement.
-- [ ] Export admit/report journals with separate always-attempt artifact names;
+- [x] Export admit/report journals with separate always-attempt artifact names;
   retain success-only admission and existing job dependencies. Failure, missing
   upload or partial completion cannot start native work or release authority.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_producer.py' -v`
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_producer.py' -v`
   and `python3 -B -m unittest discover -s tests -p 'test_workflow.py' -v`.
 
 Dependencies: FC-04. Scope: `ci/native/producer.py`, `tests/test_producer.py`,
 `.github/workflows/trusted-native.yml`, `tests/test_workflow.py`.
+
+FC-05: 483 full-suite tests, seven targeted mutations, Ruff, compilation,
+manifest validation, pinned REUSE and Actionlint passed. Source review has no
+remaining findings. The added post-claim missing-check test prevents guest
+execution and catches removal of the final pair check. FC-06 must still update
+completed qualification and coordinator verification; no live run is authorized.
 
 ### FC-06: Both-check qualification and v2 coordinator
 

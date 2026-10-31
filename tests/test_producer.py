@@ -16,6 +16,7 @@ from unittest.mock import MagicMock, patch
 import test_qualification as qualification_fixtures
 
 from ci.native import producer
+from ci.native.checks import CheckReporter
 from ci.native.producer import read_files, source_matches
 from ci.native.qualification import canonical_json
 
@@ -228,6 +229,8 @@ class ProducerIntegrationTest(unittest.TestCase):
             },
         )
         self.receipt = copy.deepcopy(fixture.receipt)
+        self.receipt['schema_version'] = 2
+        self.receipt['evidence']['activation_check_run_id'] = 801
         self.report = copy.deepcopy(fixture.report)
         self.reporter = MagicMock()
 
@@ -359,8 +362,10 @@ class ProducerIntegrationTest(unittest.TestCase):
             return {
                 'admission.json': canonical_json(
                     {
+                        'schema_version': 2,
                         'identity': self.ctx.identity,
                         'qualification_id': self.ctx.qid,
+                        'checks': {'native_check_id': 800, 'activation_check_id': 801},
                         'input_manifest_sha256': self.receipt['evidence'][
                             'input_manifest_sha256'
                         ],
@@ -369,8 +374,9 @@ class ProducerIntegrationTest(unittest.TestCase):
             }, {'id': 901}
         raise AssertionError(name)
 
-    def check(self, ctx, head, name):
-        return {'id': 800 if name == ctx.policy.check_name else 801}
+    def check(self, ctx, head, name, check_id, **kwargs):
+        self.assertEqual(check_id, 800 if name == ctx.policy.check_name else 801)
+        return {'id': check_id, 'status': 'in_progress', 'conclusion': None}
 
     def test_reporter_accepts_real_parser_fixture_and_publishes_two_successes(self):
         self.ctx.artifact = self.artifact
@@ -409,7 +415,12 @@ class ProducerIntegrationTest(unittest.TestCase):
         )
 
     def test_missing_native_artifact_is_reported_as_failure(self):
-        self.ctx.artifact = MagicMock(side_effect=ValueError('missing'))
+        def artifact(name, limits, role):
+            if role == 'native':
+                raise ValueError('missing')
+            return self.artifact(name, limits, role)
+
+        self.ctx.artifact = artifact
         with (
             patch.dict('os.environ', NATIVE_GATE_PRIVATE_KEY='fixture'),
             patch.object(producer, 'check_record', side_effect=self.check),
@@ -419,6 +430,7 @@ class ProducerIntegrationTest(unittest.TestCase):
             self.assertRaises(ValueError),
         ):
             producer.report_job(self.ctx)
+        self.assertEqual(len(self.reporter.complete.call_args_list), 2)
         self.assertFalse(
             any(
                 call.kwargs['success'] for call in self.reporter.complete.call_args_list
@@ -428,7 +440,7 @@ class ProducerIntegrationTest(unittest.TestCase):
     def test_report_write_fence_rejects_a_changed_operation(self):
         self.ctx.artifact = self.artifact
 
-        def reporter(policy, key, run_id, fence):
+        def reporter(policy, key, run_id, fence, *, journal):
             self.ctx.current = lambda: SimpleNamespace(commit='a' * 40)
             fence()
 
@@ -490,7 +502,7 @@ class ProducerIntegrationTest(unittest.TestCase):
             patch.object(
                 producer,
                 'check_record',
-                return_value={'id': 800, 'status': 'in_progress', 'conclusion': None},
+                side_effect=self.check,
             ),
             patch.object(producer, 'WorkerClaim', return_value=worker),
             patch.object(producer, 'upload'),
@@ -507,14 +519,380 @@ class ProducerIntegrationTest(unittest.TestCase):
         worker.accept.assert_called_once_with(running)
         self.assertEqual(run.call_args.kwargs['nonce'], self.ctx.execution['nonce'])
         self.assertEqual(run.call_args.kwargs['qualification_id'], self.ctx.qid)
-        self.assertEqual(run.call_args.kwargs['expected_input_manifest'], metadata['input_manifest_sha256'])
-        self.assertEqual(run.call_args.kwargs['expected_source'], self.ctx.admission['source'])
+        self.assertEqual(
+            run.call_args.kwargs['expected_input_manifest'],
+            metadata['input_manifest_sha256'],
+        )
+        self.assertEqual(
+            run.call_args.kwargs['expected_source'], self.ctx.admission['source']
+        )
         key.assert_not_called()
         written = json.loads((self.work / 'result/qualification.json').read_text())
         self.assertNotIn('reporter_job_id', written['evidence'])
+        self.assertEqual(written['schema_version'], 2)
+        self.assertEqual(written['evidence']['activation_check_run_id'], 801)
+
+
+class ProducerPairTest(unittest.TestCase):
+    def setUp(self):
+        ProducerIntegrationTest.setUp(self)
+        self.current.record['grant']['run_id'] = self.ctx.run_id
+        self.receipt['schema_version'] = 2
+        self.receipt['evidence']['activation_check_run_id'] = 801
+        self.metadata = {
+            'identity': self.ctx.identity,
+            'qualification_id': self.ctx.qid,
+            'input_manifest_sha256': '4' * 64,
+        }
+        self.admission = dict(
+            self.metadata,
+            schema_version=2,
+            checks={'native_check_id': 800, 'activation_check_id': 801},
+        )
+        self.server, self.mutations = {}, []
+        for check_id, head, name in [
+            (800, self.ctx.signed.commit, self.ctx.policy.check_name),
+            (801, self.ctx.signed.head, 'Native KWin / activation #7'),
+        ]:
+            self.server[check_id] = {
+                'id': check_id,
+                'head_sha': head,
+                'name': name,
+                'app': {'id': self.ctx.policy.app_id},
+                'external_id': self.ctx.qid,
+                'status': 'in_progress',
+                'conclusion': None,
+                'completed_at': None,
+                'details_url': 'https://github.com/owner/downstream/actions/runs/500',
+            }
+        original = self.ctx.api.get
+
+        def get(resource, **kwargs):
+            if resource.startswith('commits/'):
+                records = [
+                    copy.deepcopy(v)
+                    for v in self.server.values()
+                    if v['head_sha'] == resource.split('/')[1]
+                ]
+                return {'total_count': len(records), 'check_runs': records}
+            if resource.startswith('check-runs/'):
+                return copy.deepcopy(self.server[int(resource.split('/')[1])])
+            return original(resource, **kwargs)
+
+        self.ctx.api.get = get
+        self.ctx.artifact = self.artifact
+        self.ctx.initial = SimpleNamespace(commit='1' * 40)
+        self.ctx.objects = self.work
+        self.ctx.keyring = self.work
+
+    def artifact(self, name, limits, role):
+        if role == 'admit':
+            return {'admission.json': canonical_json(self.admission)}, {'id': 901}
+        if role == 'native':
+            return {
+                'qualification.json': canonical_json(self.receipt),
+                'report.json': canonical_json(self.report),
+            }, {'id': 900}
+        raise AssertionError(name)
+
+    def send(self, method, resource, body=None):
+        if method == 'GET':
+            return copy.deepcopy(self.server[int(resource.split('/')[1])])
+        self.mutations.append((method, resource, copy.deepcopy(body)))
+        if method == 'POST':
+            check_id = max(self.server, default=799) + 1
+            self.server[check_id] = dict(
+                body,
+                id=check_id,
+                app={'id': self.ctx.policy.app_id},
+                conclusion=None,
+                completed_at=None,
+            )
+        else:
+            check_id = int(resource.split('/')[1])
+            self.server[check_id].update(body, completed_at='2026-10-30T00:30:30Z')
+        return copy.deepcopy(self.server[check_id])
+
+    def client(self, policy, key, run_id, fence, **kwargs):
+        result = CheckReporter(policy, 'fixture', run_id, fence, **kwargs)
+        result._send = self.send
+        result.reader = self.ctx.api
+        return result
+
+    def admit(self):
+        self.current.record['state'] = 'granted'
+        with (
+            patch.object(
+                producer, 'prepared_admission', return_value=({}, self.metadata)
+            ),
+            patch.object(producer, 'wait_next', return_value=self.current),
+            patch.object(producer.CheckReporter, 'from_key', side_effect=self.client),
+            patch.dict(os.environ, {'NATIVE_GATE_PRIVATE_KEY': 'fixture'}),
+        ):
+            producer.admit_job(self.ctx)
+
+    def report_result(self):
+        with (
+            patch.object(producer.CheckReporter, 'from_key', side_effect=self.client),
+            patch.dict(os.environ, {'NATIVE_GATE_PRIVATE_KEY': 'fixture'}),
+        ):
+            producer.report_job(self.ctx)
+
+    def test_admission_publishes_only_two_confirmed_exact_ids(self):
+        self.server.clear()
+        self.admit()
+        published = json.loads((self.work / 'admission.json').read_text())
+        self.assertEqual(published['schema_version'], 2)
+        self.assertEqual(
+            published['checks'], {'native_check_id': 801, 'activation_check_id': 800}
+        )
+        journal = json.loads((self.work / 'admit-journal.json').read_text())
+        self.assertEqual(
+            [w['status'] for w in journal['writes']], ['confirmed', 'confirmed']
+        )
+        self.assertEqual([w[0] for w in self.mutations], ['POST', 'POST'])
+
+    def test_changed_first_check_or_owner_blocks_admission_publication(self):
+        for changed in ['check', 'owner']:
+            with self.subTest(changed=changed):
+                self.setUp()
+                self.server.clear()
+                original = self.send
+
+                def change(
+                    method, resource, body=None, *, changed=changed, original=original
+                ):
+                    result = original(method, resource, body)
+                    if method == 'POST' and len(self.server) == 2:
+                        if changed == 'check':
+                            self.server[800]['external_id'] = '7' * 64
+                        else:
+                            self.ctx.current = lambda: SimpleNamespace(commit='9' * 40)
+                    return result
+
+                with (
+                    patch.object(self, 'send', side_effect=change),
+                    self.assertRaises(ValueError),
+                ):
+                    self.admit()
+                self.assertFalse((self.work / 'admission.json').exists())
+
+    def test_failed_second_creation_cannot_publish_admission(self):
+        self.server.clear()
+        original = self.send
+
+        def uncertain(method, resource, body=None):
+            if method == 'POST' and self.server:
+                raise OSError('lost response')
+            return original(method, resource, body)
+
+        with (
+            patch.object(self, 'send', side_effect=uncertain),
+            self.assertRaises(ValueError),
+        ):
+            self.admit()
+        self.assertFalse((self.work / 'admission.json').exists())
+        journal = json.loads((self.work / 'admit-journal.json').read_text())
+        self.assertEqual(
+            [w['status'] for w in journal['writes']], ['confirmed', 'pending']
+        )
+
+    def test_failed_admission_file_publication_leaves_only_diagnostic_journal(self):
+        self.server.clear()
+        original = Path.write_bytes
+
+        def write(path, data):
+            if path == self.work / 'admission.json':
+                raise OSError('publication failed')
+            return original(path, data)
+
+        with patch.object(Path, 'write_bytes', write), self.assertRaises(OSError):
+            self.admit()
+        self.assertFalse((self.work / 'admission.json').exists())
+        journal = json.loads((self.work / 'admit-journal.json').read_text())
+        self.assertEqual(
+            [w['status'] for w in journal['writes']], ['confirmed', 'confirmed']
+        )
+        self.assertTrue(all(v['status'] == 'in_progress' for v in self.server.values()))
+
+    def test_native_refuses_a_missing_half_of_the_admitted_pair_before_claim(self):
+        del self.server[801]
+        with (
+            patch.object(
+                producer, 'prepared_admission', return_value=({}, self.metadata)
+            ),
+            patch.object(producer, 'prepared_inputs') as inputs,
+            patch.object(producer, 'WorkerClaim') as claim,
+            self.assertRaises((ValueError, KeyError)),
+        ):
+            producer.native_job(self.ctx)
+        inputs.assert_not_called()
+        claim.assert_not_called()
+
+    def test_native_rechecks_pair_after_claim_before_starting_guest(self):
+        self.current.record['state'] = 'granted'
+        running = copy.deepcopy(self.current)
+        running.record['state'] = 'running'
+        running.commit = 'e' * 40
+        self.fixture.api.responses['actions/runs/500/attempts/1/jobs']['jobs'][2][
+            'status'
+        ] = 'in_progress'
+
+        def wait(*args):
+            self.ctx.current = lambda: running
+            return running
+
+        worker = MagicMock()
+        worker.nonce = '7' * 32
+        worker.accept.side_effect = lambda state: self.server.pop(801)
+        with (
+            patch.object(
+                producer, 'prepared_admission', return_value=({}, self.metadata)
+            ),
+            patch.object(
+                producer, 'prepared_inputs', return_value=(self.work, self.metadata)
+            ),
+            patch.object(producer, 'WorkerClaim', return_value=worker),
+            patch.object(producer, 'wait_next', side_effect=wait),
+            patch.object(producer, 'upload'),
+            patch.object(producer.subprocess, 'run'),
+            patch.object(
+                producer, 'regular_digest', return_value=(producer.GUEST_SHA256, 10)
+            ),
+            patch.object(producer, 'run_guest') as guest,
+            patch.dict(os.environ, NATIVE_JOB_STARTED=str(__import__('time').time())),
+            self.assertRaises((ValueError, KeyError)),
+        ):
+            producer.native_job(self.ctx)
+        worker.accept.assert_called_once_with(running)
+        guest.assert_not_called()
+
+    def test_report_requires_versioned_admission_before_any_mutation(self):
+        del self.admission['schema_version']
+        with self.assertRaises(ValueError):
+            self.report_result()
+        self.assertEqual(self.mutations, [])
+
+    def test_successful_report_uses_admitted_ids_and_preserves_terminal_history(self):
+        old = dict(
+            self.server[800],
+            id=990,
+            external_id='5' * 64,
+            details_url='https://github.com/owner/downstream/actions/runs/499',
+            status='completed',
+            conclusion='failure',
+            completed_at='2026-10-29T00:00:00Z',
+        )
+        self.server[990] = copy.deepcopy(old)
+        self.report_result()
+        self.assertEqual(
+            [w[1] for w in self.mutations], ['check-runs/800', 'check-runs/801']
+        )
+        self.assertEqual(
+            [self.server[i]['conclusion'] for i in [800, 801]], ['success', 'success']
+        )
+        self.assertEqual(self.server[990], old)
+        journal = json.loads((self.work / 'report-journal.json').read_text())
+        self.assertEqual(
+            [w['acknowledged_check_id'] for w in journal['writes']], [800, 801]
+        )
+        self.assertEqual(
+            [w['status'] for w in journal['writes']], ['confirmed', 'confirmed']
+        )
+
+    def test_conflicting_record_after_completion_prevents_report_success(self):
+        original = self.send
+
+        def conflict(method, resource, body=None):
+            result = original(method, resource, body)
+            if method == 'PATCH' and resource == 'check-runs/801':
+                self.server[999] = dict(self.server[801], id=999)
+            return result
+
+        with (
+            patch.object(self, 'send', side_effect=conflict),
+            self.assertRaises(ValueError),
+        ):
+            self.report_result()
+        self.assertEqual(len(self.mutations), 2)
+
+    def test_missing_native_evidence_completes_only_the_admitted_pair_as_failure(self):
+        original = self.artifact
+
+        def missing(name, limits, role):
+            if role == 'native':
+                raise ValueError('missing native evidence')
+            return original(name, limits, role)
+
+        self.ctx.artifact = missing
+        with self.assertRaises(ValueError):
+            self.report_result()
+        self.assertEqual(
+            [v['conclusion'] for v in self.server.values()], ['failure', 'failure']
+        )
+        self.assertEqual(
+            [w[1] for w in self.mutations], ['check-runs/800', 'check-runs/801']
+        )
+
+    def test_changed_admitted_id_cannot_adopt_a_replacement(self):
+        self.server[802] = dict(self.server.pop(800), id=802)
+        with self.assertRaises((ValueError, KeyError)):
+            self.report_result()
+        self.assertEqual(self.mutations, [])
+
+    def test_uncertain_first_completion_stops_the_second_write(self):
+        original = self.send
+
+        def uncertain(method, resource, body=None):
+            result = original(method, resource, body)
+            if method == 'PATCH':
+                raise OSError('lost completion response')
+            return result
+
+        with (
+            patch.object(self, 'send', side_effect=uncertain),
+            self.assertRaises(ValueError),
+        ):
+            self.report_result()
+        self.assertEqual([w[1] for w in self.mutations], ['check-runs/800'])
+        journal = json.loads((self.work / 'report-journal.json').read_text())
+        self.assertEqual(journal['writes'][0]['status'], 'pending')
+
+    def test_unversioned_or_swapped_native_receipts_never_mark_success(self):
+        for change in ['unversioned', 'swapped']:
+            with self.subTest(change=change):
+                self.setUp()
+                if change == 'unversioned':
+                    del self.receipt['schema_version']
+                else:
+                    self.receipt['evidence']['check_run_id'] = 801
+                    self.receipt['evidence']['activation_check_run_id'] = 800
+                with self.assertRaises(ValueError):
+                    self.report_result()
+                self.assertEqual(
+                    [v['conclusion'] for v in self.server.values()],
+                    ['failure', 'failure'],
+                )
 
 
 class ProducerWorkflowTest(unittest.TestCase):
+    def test_failure_journals_cannot_bypass_success_only_admission(self):
+        root = Path(__file__).resolve().parents[1]
+        text = (root / '.github/workflows/trusted-native.yml').read_text()
+        admit = text.split('\n  admit:\n')[1].split('\n  native:\n')[0]
+        report = text.split('\n  report:\n')[1]
+        for role, section in [('admit', admit), ('report', report)]:
+            marker = f'native-check-journal-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}-{role}'
+            self.assertIn(marker, section)
+            step = section.split(marker)[0].rsplit('      - uses:', 1)[1]
+            self.assertIn('if: always()', step)
+            self.assertIn(f'trusted-native/{role}-journal.json', section)
+            self.assertIn('if-no-files-found: error', section)
+        normal = admit.split('name: native-admission-')[0].rsplit('      - uses:', 1)[1]
+        self.assertNotIn('if: always()', normal)
+        self.assertIn('needs: admit', text.split('\n  native:\n')[1])
+        self.assertIn("needs.admit.result == 'success'", report)
+
     def test_only_main_reporter_jobs_reference_the_app_key(self):
         root = Path(__file__).resolve().parents[1]
         text = (root / '.github/workflows/trusted-native.yml').read_text()

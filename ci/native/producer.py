@@ -18,6 +18,8 @@ from pathlib import Path
 from urllib.request import build_opener
 
 from ci.hypervisor.boot_guest import GUEST_SHA256
+from ci.native.check_journal import CheckJournal
+from ci.native.check_records import CheckIdentity, select_check, validate_check
 from ci.native.checks import CheckReporter
 from ci.native.coordination import read_signed_coordination
 from ci.native.current_candidate import verify_admission_association
@@ -27,13 +29,16 @@ from ci.native.proof_api import NoRedirect, ProofAPI, object_pairs
 from ci.native.qualification import (
     MAX_RECEIPT_BYTES,
     MAX_REPORT_BYTES,
+    CheckBinding,
     QualificationPolicy,
     canonical_json,
     digest,
     identifier,
+    match_admission_v2,
     require,
     timestamp,
-    validate_receipt,
+    validate_admission_v2,
+    validate_receipt_v2,
     verify_native,
 )
 from ci.native.signed_merge import verify_signed_merge
@@ -739,23 +744,56 @@ def prepare_job(ctx):
     )
 
 
-def check_record(ctx, head, name):
+def check_record(ctx, head, name, check_id, *, conclusion=None):
+    """Require the admitted ID directly and in the bounded visible inventory."""
+    expected = CheckIdentity(
+        ctx.policy.repository, ctx.policy.app_id, head, name, ctx.qid, ctx.run_id
+    )
+    status = 'in_progress' if conclusion is None else 'completed'
+    value = ctx.api.get(f'check-runs/{identifier(check_id)}')
+    validate_check(value, expected, check_id, status=status, conclusion=conclusion)
     checks = get_all(
         ctx.api, f'commits/{head}/check-runs', key='check_runs', check_filter='all'
     )
-    matched = [
-        c for c in checks if c['name'] == name and c['app']['id'] == ctx.policy.app_id
-    ]
-    require(len(matched) == 1, 'missing or duplicate App check')
-    value = matched[0]
-    require(
-        value['head_sha'] == head
-        and value['external_id'] == ctx.qid
-        and value['details_url']
-        == f'https://github.com/{REPOSITORY}/actions/runs/{ctx.run_id}',
-        'App check belongs to another operation',
-    )
+    select_check(checks, expected, check_id, status=status, conclusion=conclusion)
     return value
+
+
+def check_pair(ctx, binding, *, conclusion=None):
+    require(type(binding) is CheckBinding, 'missing admitted check pair')
+    return {
+        'native': check_record(
+            ctx,
+            ctx.signed.commit,
+            ctx.policy.check_name,
+            binding.native_check_id,
+            conclusion=conclusion,
+        ),
+        'activation': check_record(
+            ctx,
+            ctx.signed.head,
+            f'Native KWin / activation #{ctx.admission["pr_number"]}',
+            binding.activation_check_id,
+            conclusion=conclusion,
+        ),
+    }
+
+
+def published_admission(ctx):
+    """Only the authenticated successful admit job can supply the bound pair."""
+    files, artifact = ctx.artifact(
+        f'native-admission-{ctx.run_id}-1',
+        {'admission.json': MAX_RECEIPT_BYTES},
+        'admit',
+    )
+    value = _json(files['admission.json'])
+    binding = validate_admission_v2(value, ctx.policy, ctx.signed)
+    require(
+        canonical_json(value['identity']) == canonical_json(ctx.identity)
+        and value['qualification_id'] == ctx.qid,
+        'published admission differs',
+    )
+    return value, binding, artifact
 
 
 def prepared_admission(ctx):
@@ -816,36 +854,48 @@ def admit_job(ctx):
             'admission no longer owns coordination',
         )
 
-    reporter = CheckReporter.from_key(
-        ctx.policy, os.environ['NATIVE_GATE_PRIVATE_KEY'], ctx.run_id, fence
+    journal = CheckJournal(
+        ctx.work / 'admit-journal.json',
+        qualification_id=ctx.qid,
+        run_id=ctx.run_id,
+        nonce=ctx.execution['nonce'],
+        phase='admit',
     )
-    reporter.begin(
+    reporter = CheckReporter.from_key(
+        ctx.policy,
+        os.environ['NATIVE_GATE_PRIVATE_KEY'],
+        ctx.run_id,
+        fence,
+        journal=journal,
+    )
+    activation_id = reporter.begin(
         ctx.signed.head,
         f'Native KWin / activation #{ctx.admission["pr_number"]}',
         ctx.qid,
     )
-    reporter.begin(ctx.signed.commit, ctx.policy.check_name, ctx.qid)
-    (ctx.work / 'admission.json').write_bytes(canonical_json(metadata))
+    native_id = reporter.begin(ctx.signed.commit, ctx.policy.check_name, ctx.qid)
+    binding = CheckBinding(native_id, activation_id)
+    check_pair(ctx, binding)
+    value = dict(
+        metadata,
+        schema_version=2,
+        checks={'native_check_id': native_id, 'activation_check_id': activation_id},
+    )
+    validate_admission_v2(value, ctx.policy, ctx.signed)
+    fence()
+    (ctx.work / 'admission.json').write_bytes(canonical_json(value))
 
 
 def native_job(ctx):
     files, metadata = prepared_admission(ctx)
-    admission_files, admission_artifact = ctx.artifact(
-        f'native-admission-{ctx.run_id}-1',
-        {'admission.json': MAX_RECEIPT_BYTES},
-        'admit',
-    )
-    admission = _json(admission_files['admission.json'])
+    admission, binding, admission_artifact = published_admission(ctx)
     require(
-        canonical_json(admission) == canonical_json(metadata),
+        canonical_json(admission)
+        == canonical_json(dict(metadata, schema_version=2, checks=admission['checks'])),
         'published admission differs',
     )
+    check_pair(ctx, binding)
     directory, metadata = prepared_inputs(ctx, files)
-    check = check_record(ctx, ctx.signed.commit, ctx.policy.check_name)
-    require(
-        check['status'] == 'in_progress' and check['conclusion'] is None,
-        'native check is not pending',
-    )
     job = ctx.jobs()['native']
     require(job['status'] == 'in_progress', 'native job is not active')
     worker = WorkerClaim(ctx.work, ctx.policy, run_id=ctx.run_id, job_id=job['id'])
@@ -902,6 +952,7 @@ def native_job(ctx):
     require(
         ctx.current().commit == running.commit, 'claim changed before native execution'
     )
+    check_pair(ctx, binding)
     with handled_interruptions():
         report = run_guest(
             ctx.root,
@@ -917,6 +968,7 @@ def native_job(ctx):
         )
     jobs = ctx.jobs()
     receipt = {
+        'schema_version': 2,
         'identity': ctx.identity,
         'qualification_id': ctx.qid,
         'evidence': {
@@ -924,7 +976,8 @@ def native_job(ctx):
             'admission_job_id': jobs['admit']['id'],
             'native_job_id': job['id'],
             'admission_artifact_id': admission_artifact['id'],
-            'check_run_id': check['id'],
+            'check_run_id': binding.native_check_id,
+            'activation_check_run_id': binding.activation_check_id,
             'input_manifest_sha256': metadata['input_manifest_sha256'],
         },
     }
@@ -942,6 +995,8 @@ def report_job(ctx):
         current.record['state'] in {'dispatching', 'granted', 'running'},
         'reporter lost coordination',
     )
+    approved, binding, artifact = published_admission(ctx)
+    check_pair(ctx, binding)
     success = False
     try:
         files, _ = ctx.artifact(
@@ -953,7 +1008,7 @@ def report_job(ctx):
             _json(files['qualification.json']),
             _json(files['report.json']),
         )
-        admission, execution, evidence = validate_receipt(
+        admission, execution, evidence = validate_receipt_v2(
             receipt, ctx.policy, ctx.signed
         )
         require(
@@ -961,21 +1016,10 @@ def report_job(ctx):
             and canonical_json(execution) == canonical_json(ctx.execution),
             'native receipt identity differs',
         )
-        approved, artifact = ctx.artifact(
-            f'native-admission-{ctx.run_id}-1',
-            {'admission.json': MAX_RECEIPT_BYTES},
-            'admit',
-        )
         require(
             artifact['id'] == evidence['admission_artifact_id']
-            and canonical_json(_json(approved['admission.json']))
-            == canonical_json(
-                {
-                    'identity': ctx.identity,
-                    'qualification_id': ctx.qid,
-                    'input_manifest_sha256': evidence['input_manifest_sha256'],
-                }
-            ),
+            and match_admission_v2(approved, receipt, ctx.policy, ctx.signed)
+            == binding,
             'native admission differs',
         )
         jobs = ctx.jobs()
@@ -991,10 +1035,6 @@ def report_job(ctx):
             'wrong native claim',
         )
         verify_native(report, receipt, ctx.policy)
-        check = check_record(ctx, ctx.signed.commit, ctx.policy.check_name)
-        require(
-            check['id'] == evidence['check_run_id'], 'native check identity differs'
-        )
         success = True
     except (
         ValueError,
@@ -1011,16 +1051,34 @@ def report_job(ctx):
         ctx.association()
         require(ctx.current().commit == current.commit, 'reporter coordination changed')
 
+    journal = CheckJournal(
+        ctx.work / 'report-journal.json',
+        qualification_id=ctx.qid,
+        run_id=ctx.run_id,
+        nonce=ctx.execution['nonce'],
+        phase='report',
+    )
     reporter = CheckReporter.from_key(
-        ctx.policy, os.environ['NATIVE_GATE_PRIVATE_KEY'], ctx.run_id, fence
+        ctx.policy,
+        os.environ['NATIVE_GATE_PRIVATE_KEY'],
+        ctx.run_id,
+        fence,
+        journal=journal,
     )
-    native = check_record(ctx, ctx.signed.commit, ctx.policy.check_name)
     pointer_name = f'Native KWin / activation #{ctx.admission["pr_number"]}'
-    pointer = check_record(ctx, ctx.signed.head, pointer_name)
     reporter.complete(
-        native['id'], ctx.signed.commit, ctx.policy.check_name, ctx.qid, success=success
+        binding.native_check_id,
+        ctx.signed.commit,
+        ctx.policy.check_name,
+        ctx.qid,
+        success=success,
     )
     reporter.complete(
-        pointer['id'], ctx.signed.head, pointer_name, ctx.qid, success=success
+        binding.activation_check_id,
+        ctx.signed.head,
+        pointer_name,
+        ctx.qid,
+        success=success,
     )
+    check_pair(ctx, binding, conclusion='success' if success else 'failure')
     require(success, 'native qualification failed or could not be verified')
