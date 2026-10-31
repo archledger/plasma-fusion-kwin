@@ -9,10 +9,13 @@ disabled or treated as satisfied.
 """
 from dataclasses import dataclass
 
+from ci.native.check_records import CheckIdentity, select_check, validate_check
+from ci.native.coordination import SignedCoordination, validate_record
 from ci.native.current_candidate import verify_current_association
 from ci.native.pagination import get_all
 from ci.native.qualification import (
     QualificationError,
+    QualifiedEvidenceV2,
     canonical_json,
     digest,
     identifier,
@@ -131,24 +134,113 @@ def successful_check(checks, name, app_id, head):
     return check
 
 
+def verify_current_operation(policy, evidence, coordination):
+    """Require the authenticated signed operation, never a newest successful check."""
+    require(
+        type(evidence) is QualifiedEvidenceV2
+        and type(coordination) is SignedCoordination
+        and coordination.fingerprint == policy.fingerprint,
+        'current readiness requires verified v2 evidence and signed coordination',
+    )
+    value = coordination.record
+    validate_record(value, policy)
+    if value['state'] in {'running', 'finalizing'}:
+        operation, grant = value['operation'], value['grant']
+        require(
+            operation['id'] == operation['nonce'] == evidence.operation_nonce
+            and grant['qualification_id'] == evidence.qualification_id
+            and grant['run_id'] == evidence.run_id
+            and grant['run_number'] == evidence.run_number
+            and grant['native_job_id'] == evidence.native_job_id,
+            'current signed operation differs from the verified execution',
+        )
+    else:
+        require(value['state'] == 'idle', 'current operation is not ready')
+        completion = value['completion']
+        require(
+            completion is not None
+            and completion['outcome'] == 'qualified-only'
+            and completion['qualification_id'] == evidence.qualification_id
+            and completion['operation_id'] == evidence.operation_nonce
+            and completion['main_sha'] is None,
+            'idle completion is not the verified qualified-only operation',
+        )
+
+
+def _check_fields(value):
+    return (
+        value['id'],
+        value['app']['id'],
+        value['name'],
+        value['head_sha'],
+        value['external_id'],
+        value['details_url'],
+        value['status'],
+        value['conclusion'],
+        value['completed_at'],
+    )
+
+
+def _exact_check(api, records, expected, check_id):
+    observed = select_check(
+        records, expected, check_id, status='completed', conclusion='success'
+    )
+    value = api.get('check-runs/' + str(check_id))
+    validate_check(value, expected, check_id, status='completed', conclusion='success')
+    require(
+        _check_fields(observed) == _check_fields(value),
+        'admitted check changed between reads',
+    )
+    return value
+
+
 def current_checks(api, policy, evidence, required):
     signed = evidence.signed_merge
-    checks = get_all(api, 'commits/' + signed.commit + '/check-runs',
-                     key='check_runs', check_filter='all')
-    identifiers = tuple(successful_check(checks, name, app, signed.commit)['id']
-                        for name, app in required)
-    native = successful_check(checks, policy.check_name, policy.app_id, signed.commit)
-    require(native['id'] == evidence.check_run_id and native['external_id'] == evidence.qualification_id
-            and native['details_url'] == f'https://github.com/{policy.repository}/actions/runs/{evidence.run_id}',
-            'native check is not the verified qualification')
-    head_checks = get_all(api, 'commits/' + signed.head + '/check-runs',
-                          key='check_runs', check_filter='all')
-    pointer = successful_check(head_checks,
-                               f'Native KWin / activation #{evidence.producer_attestation.pr_number}',
-                               policy.app_id, signed.head)
-    require(pointer['external_id'] == evidence.qualification_id
-            and pointer['details_url'] == native['details_url'], 'qualification is not the active attempt')
-    return identifiers, pointer['id']
+    checks = get_all(
+        api,
+        'commits/' + signed.commit + '/check-runs',
+        key='check_runs',
+        check_filter='all',
+    )
+    native = _exact_check(
+        api,
+        checks,
+        CheckIdentity(
+            policy.repository,
+            policy.app_id,
+            signed.commit,
+            policy.check_name,
+            evidence.qualification_id,
+            evidence.run_id,
+        ),
+        evidence.check_run_id,
+    )
+    identifiers = tuple(
+        native['id']
+        if (name, app) == (policy.check_name, policy.app_id)
+        else successful_check(checks, name, app, signed.commit)['id']
+        for name, app in required
+    )
+    head_checks = get_all(
+        api,
+        'commits/' + signed.head + '/check-runs',
+        key='check_runs',
+        check_filter='all',
+    )
+    pointer = _exact_check(
+        api,
+        head_checks,
+        CheckIdentity(
+            policy.repository,
+            policy.app_id,
+            signed.head,
+            f'Native KWin / activation #{evidence.producer_attestation.pr_number}',
+            evidence.qualification_id,
+            evidence.run_id,
+        ),
+        evidence.activation_check_id,
+    )
+    return identifiers, pointer['id'], (_check_fields(native), _check_fields(pointer))
 
 
 def current_reviews(api, policy, evidence, author_id, count):
@@ -157,56 +249,84 @@ def current_reviews(api, policy, evidence, author_id, count):
                             author_id=author_id, required=count)
 
 
-def verify_current_policy(api, policy, evidence):
+def verify_current_policy(api, policy, evidence, *, coordination):
     """Observe all supported current gates; the caller must not treat this as a lock."""
     try:
+        verify_current_operation(policy, evidence, coordination)
         association = verify_current_association(api, policy, evidence)
-        require(api.get('rules/branches/main') == [], 'effective rulesets need separate verification')
+        require(
+            api.get('rules/branches/main') == [],
+            'effective rulesets need separate verification',
+        )
         protection = api.get('branches/main/protection')
         required = protection_requirements(protection, policy)
         count = required_reviews(protection)
         signatures = api.get('branches/main/protection/required_signatures')
         enabled_rule(signatures)
         if 'required_signatures' in protection:
-            require(protection['required_signatures']['enabled'] is signatures['enabled'],
-                    'signed-commit protection changed')
+            require(
+                protection['required_signatures']['enabled'] is signatures['enabled'],
+                'signed-commit protection changed',
+            )
         pr = api.get(f'pulls/{association.pr_number}')
-        require(pr['head']['sha'] == association.head and pr['base']['sha'] == association.base,
-                'PR changed while reading policy')
+        require(
+            pr['head']['sha'] == association.head
+            and pr['base']['sha'] == association.base,
+            'PR changed while reading policy',
+        )
         author_id = identifier(pr['user']['id'])
-        check_ids, pointer_id = current_checks(api, policy, evidence, required)
+        observed_checks = current_checks(api, policy, evidence, required)
+        check_ids, pointer_id, _ = observed_checks
         approvals = current_reviews(api, policy, evidence, author_id, count)
         if signatures['enabled']:
             commits = get_all(api, f'pulls/{association.pr_number}/commits')
             commit_ids = [digest(commit['sha']) for commit in commits]
-            require(len(commits) == identifier(pr['commits']) and commits
-                    and commit_ids[-1] == association.head
-                    and len(set(commit_ids)) == len(commits),
-                    'PR commit inventory is incomplete or changed')
-            require(all(commit['commit']['verification']['verified'] is True
-                        and commit['commit']['verification']['reason'] == 'valid' for commit in commits),
-                    'PR commits do not satisfy signature protection')
-        current_native = api.get('check-runs/' + str(evidence.check_run_id))
-        successful_check([current_native], policy.check_name, policy.app_id, association.signed_merge)
-        require(current_native['id'] == evidence.check_run_id
-                and current_native['external_id'] == evidence.qualification_id
-                and current_native['details_url']
-                == f'https://github.com/{policy.repository}/actions/runs/{evidence.run_id}',
-                'native check changed during verification')
-        require(current_checks(api, policy, evidence, required) == (check_ids, pointer_id),
-                'required checks or activation changed')
-        require(current_reviews(api, policy, evidence, author_id, count) == approvals,
-                'review state changed during verification')
-        require(canonical_json(api.get('branches/main/protection')) == canonical_json(protection)
-                and canonical_json(api.get('branches/main/protection/required_signatures'))
-                == canonical_json(signatures)
-                and api.get('rules/branches/main') == [], 'protection changed during verification')
-        require(verify_current_association(api, policy, evidence) == association,
-                'current association changed')
-        verify_run(api.get(f'actions/runs/{evidence.run_id}'), policy,
-                   {'run_id': evidence.run_id, 'run_number': evidence.run_number})
-        return ReadinessSnapshot(evidence.qualification_id, check_ids, pointer_id, approvals)
+            require(
+                len(commits) == identifier(pr['commits'])
+                and commits
+                and commit_ids[-1] == association.head
+                and len(set(commit_ids)) == len(commits),
+                'PR commit inventory is incomplete or changed',
+            )
+            require(
+                all(
+                    commit['commit']['verification']['verified'] is True
+                    and commit['commit']['verification']['reason'] == 'valid'
+                    for commit in commits
+                ),
+                'PR commits do not satisfy signature protection',
+            )
+        require(
+            current_checks(api, policy, evidence, required) == observed_checks,
+            'required checks or activation changed',
+        )
+        require(
+            current_reviews(api, policy, evidence, author_id, count) == approvals,
+            'review state changed during verification',
+        )
+        require(
+            canonical_json(api.get('branches/main/protection'))
+            == canonical_json(protection)
+            and canonical_json(api.get('branches/main/protection/required_signatures'))
+            == canonical_json(signatures)
+            and api.get('rules/branches/main') == [],
+            'protection changed during verification',
+        )
+        require(
+            verify_current_association(api, policy, evidence) == association,
+            'current association changed',
+        )
+        verify_run(
+            api.get(f'actions/runs/{evidence.run_id}'),
+            policy,
+            {'run_id': evidence.run_id, 'run_number': evidence.run_number},
+        )
+        return ReadinessSnapshot(
+            evidence.qualification_id, check_ids, pointer_id, approvals
+        )
     except QualificationError:
         raise
     except (ValueError, KeyError, TypeError, IndexError, AttributeError):
-        raise QualificationError('invalid or unavailable current merge policy') from None
+        raise QualificationError(
+            'invalid or unavailable current merge policy'
+        ) from None

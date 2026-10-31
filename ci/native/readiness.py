@@ -22,11 +22,12 @@ from ci.native.qualification import (
     MAX_REPORT_BYTES,
     QualificationError,
     QualificationPolicy,
+    QualifiedEvidenceV2,
     digest,
     identifier,
     read_archive,
     require,
-    verify_qualification,
+    verify_qualification_v2,
 )
 from ci.native.signed_merge import SignatureError, verify_signed_merge
 
@@ -154,34 +155,102 @@ def verify_coordination_anchor(api, policy, *, source, keyring, signoff, anchor)
 
 
 def verify_readiness(
-    api, policy, *, source, keyring, signoff, artifact_id, archive, admission_archive
+    api,
+    policy,
+    *,
+    source,
+    keyring,
+    signoff,
+    artifact_id,
+    archive,
+    admission_archive,
+    coordination_anchor,
 ):
     """Verify historical proof plus current policy; never invoke a Git update."""
     try:
         require(api.repository == policy.repository, 'wrong proof API repository')
+        state = verify_coordination_anchor(
+            api,
+            policy,
+            source=source,
+            keyring=keyring,
+            signoff=signoff,
+            anchor=coordination_anchor,
+        )
         artifact = api.get('actions/artifacts/' + str(identifier(artifact_id)))
-        require(identifier(artifact['id']) == artifact_id and artifact['expired'] is False
-                and identifier(artifact['workflow_run']['repository_id']) == policy.repository_id
-                and identifier(artifact['workflow_run']['head_repository_id']) == policy.repository_id
-                and artifact['workflow_run']['head_sha'] == policy.launcher, 'wrong initial artifact provenance')
-        content = read_archive(archive, artifact,
-                               {'qualification.json': MAX_RECEIPT_BYTES, 'report.json': MAX_REPORT_BYTES})
+        require(
+            identifier(artifact['id']) == artifact_id
+            and artifact['expired'] is False
+            and identifier(artifact['workflow_run']['repository_id'])
+            == policy.repository_id
+            and identifier(artifact['workflow_run']['head_repository_id'])
+            == policy.repository_id
+            and artifact['workflow_run']['head_sha'] == policy.launcher,
+            'wrong initial artifact provenance',
+        )
+        content = read_archive(
+            archive,
+            artifact,
+            {'qualification.json': MAX_RECEIPT_BYTES, 'report.json': MAX_REPORT_BYTES},
+        )
         admission = content['qualification.json']['identity']['admission']
-        target = MergeCommit(admission['base'], admission['head'], admission['signed_merge'], admission['tree'])
-        signed = verify_signed_merge(source, target, keyring=keyring,
-                                     fingerprint=policy.fingerprint, signoff=signoff)
-        evidence = verify_qualification(api, policy, signed, artifact_id=artifact_id,
-                                        archive=archive, admission_archive=admission_archive)
-        snapshot = verify_current_policy(api, policy, evidence)
-        require(evidence.signed_merge == signed
-                and snapshot.qualification_id == evidence.qualification_id
-                and evidence.check_run_id in snapshot.required_check_ids,
-                'proof layers returned mismatched identities')
-        return {'ok': True, 'mode': 'read-only', 'merge_authorized': False,
-                'qualification_id': evidence.qualification_id, 'run_id': evidence.run_id,
-                'signed_merge': signed.commit, 'base': signed.base, 'head': signed.head,
-                'pr_number': evidence.producer_attestation.pr_number,
-                'native_test_entries': evidence.tests['qt_test_passed'], 'snapshot': asdict(snapshot)}
+        target = MergeCommit(
+            admission['base'],
+            admission['head'],
+            admission['signed_merge'],
+            admission['tree'],
+        )
+        signed = verify_signed_merge(
+            source,
+            target,
+            keyring=keyring,
+            fingerprint=policy.fingerprint,
+            signoff=signoff,
+        )
+        evidence = verify_qualification_v2(
+            api,
+            policy,
+            signed,
+            artifact_id=artifact_id,
+            archive=archive,
+            admission_archive=admission_archive,
+        )
+        require(type(evidence) is QualifiedEvidenceV2, 'expected verified v2 evidence')
+        snapshot = verify_current_policy(api, policy, evidence, coordination=state)
+        require(
+            evidence.signed_merge == signed
+            and snapshot.qualification_id == evidence.qualification_id
+            and evidence.check_run_id in snapshot.required_check_ids
+            and evidence.activation_check_id == snapshot.activation_check_id,
+            'proof layers returned mismatched identities',
+        )
+        require(
+            verify_coordination_anchor(
+                api,
+                policy,
+                source=source,
+                keyring=keyring,
+                signoff=signoff,
+                anchor=coordination_anchor,
+            )
+            == state,
+            'coordination changed during readiness observations',
+        )
+        return {
+            'ok': True,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'qualification_id': evidence.qualification_id,
+            'run_id': evidence.run_id,
+            'signed_merge': signed.commit,
+            'base': signed.base,
+            'head': signed.head,
+            'pr_number': evidence.producer_attestation.pr_number,
+            'coordination_sha': state.commit,
+            'coordination_state': state.record['state'],
+            'native_test_entries': evidence.tests['qt_test_passed'],
+            'snapshot': asdict(snapshot),
+        }
     except QualificationError:
         raise
     except SignatureError as error:
@@ -194,15 +263,36 @@ def _worker(options):
     """Internal worker; the command-line parent enforces the whole-operation deadline."""
     try:
         policy, signoff = load_policy(read_regular(options['policy'], MAX_POLICY_BYTES))
-        api = ProofAPI(policy.repository, token=os.environ.get('GH_TOKEN'), max_calls=64)
-        value = verify_readiness(api, policy, source=options['source'], keyring=options['keyring'], signoff=signoff,
-                                 artifact_id=options['artifact_id'],
-                                 archive=read_regular(options['artifact'], MAX_ARCHIVE_BYTES),
-                                 admission_archive=read_regular(options['admission'], MAX_ARCHIVE_BYTES))
+        anchor = load_coordination_anchor(
+            read_regular(options['coordination_anchor'], MAX_ANCHOR_BYTES)
+        )
+        api = ProofAPI(
+            policy.repository, token=os.environ.get('GH_TOKEN'), max_calls=64
+        )
+        value = verify_readiness(
+            api,
+            policy,
+            source=options['source'],
+            keyring=options['keyring'],
+            signoff=signoff,
+            artifact_id=options['artifact_id'],
+            archive=read_regular(options['artifact'], MAX_ARCHIVE_BYTES),
+            admission_archive=read_regular(options['admission'], MAX_ARCHIVE_BYTES),
+            coordination_anchor=anchor,
+        )
     except QualificationError as error:
-        value = {'ok': False, 'mode': 'read-only', 'merge_authorized': False, 'error': str(error)}
+        value = {
+            'ok': False,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'error': str(error),
+        }
     except (OSError, ValueError, TypeError, KeyError, IndexError, AttributeError):
-        value = {'ok': False, 'mode': 'read-only', 'merge_authorized': False,
-                 'error': 'unexpected read-only verification failure'}
+        value = {
+            'ok': False,
+            'mode': 'read-only',
+            'merge_authorized': False,
+            'error': 'unexpected read-only verification failure',
+        }
     print(json.dumps(value, sort_keys=True))
     return 0 if value['ok'] else 1

@@ -27,7 +27,7 @@ The completed checklist below is retained. The current proposed checklist is
 ## Fresh-check lifecycle tasks
 
 Status: plan and [specification](../docs/FRESH-CHECK-LIFECYCLE.md) approved by the
-owner on 2026-10-31; FC-01 through FC-07 and checkpoint B are complete locally. See the
+owner on 2026-10-31; FC-01 through FC-08 and checkpoint B are complete locally. See the
 [plan](plan.md#fresh-check-lifecycle-implementation) for source-wide commands,
 dependency graph and separate operational approvals. Every implementation box
 starts unchecked; historical tests and reviews are not completion evidence.
@@ -169,17 +169,23 @@ that integration and the signed-operation predicates remain FC-08.
 
 ### FC-08: Current signed operation in readiness
 
-- [ ] Require `--coordination-anchor` and verified v2 bindings. Enforce exact
+- [x] Require `--coordination-anchor` and verified v2 bindings. Enforce exact
   running/finalizing predicates or qualified-only idle with matching nonce/QID
   and null main result; reject every other state or changed tip.
-- [ ] Select only the admitted check pair, recheck visible conflicts and preserve
+- [x] Select only the admitted check pair, recheck visible conflicts and preserve
   all existing protection/review/association gates and `merge_authorized: false`.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_current_policy.py' -v`
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_current_policy.py' -v`
   and `python3 -B -m unittest discover -s tests -p 'test_readiness.py' -v`.
 
 Dependencies: FC-01, FC-06–07. Scope: `ci/native/current_policy.py`,
 `ci/native/readiness.py`, `tools/verify_native_proof.py`,
 `tests/test_current_policy.py`, `tests/test_readiness.py`.
+
+FC-08: 554 full-suite tests, eight targeted mutations, Ruff, compilation,
+manifest validation and pinned REUSE pass. Complete diff/status review has no
+findings. The read-only command now requires the anchor and returns its observed
+commit/state while keeping `merge_authorized: false`. FC-09 must still add the
+integrated failure/replay coverage before checkpoint C and final source closeout.
 
 ### FC-09: Integrated failure and replay coverage
 
