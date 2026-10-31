@@ -66,6 +66,15 @@ silently repaired. The production native checks and authority remain untouched.
 Write intent is saved before each mutation and cleared only after verified
 readback, so interruption retains the pending phase and known identifiers.
 
+Failure reports distinguish HTTP rejection, transport failure, generic I/O,
+invalid JSON, and response-field mismatch. HTTP diagnostics retain only the status and
+allowlisted validation field/code pairs from a bounded 8 KiB error body.
+Recognized null/type messages may supply field-name hints; raw messages, URLs,
+headers, response values and credentials are never copied into diagnostics.
+Mismatch diagnostics list field names only. Unknown causes remain unknown.
+These fields describe new failures; they do not retroactively identify the
+earlier probe's unrecorded cause or turn a failed write into success.
+
 A successful probe is evidence for the tested API lifecycle only. It does not
 release the held production operation, authorize another native attempt, or
 enable merge enforcement.

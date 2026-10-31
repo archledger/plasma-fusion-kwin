@@ -8,6 +8,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
+from urllib.error import HTTPError
 
 from ci.native.checks import CheckReporter, CheckWriteError
 from tools import probe_check_lifecycle as probe
@@ -102,6 +103,20 @@ class CheckLifecycleTest(unittest.TestCase):
         self.assertEqual((pending['phase'], pending['action']), ('create', 'begin'))
         self.assertIsNone(pending['check_id'])
         self.assertEqual(len(pending['external_id']), 64)
+
+    def test_failure_report_records_safe_http_cause(self):
+        error = CheckWriteError('private-message')
+        error.__cause__ = HTTPError(
+            'https://private.invalid/token', 422, 'private-message', {}, None
+        )
+        with (
+            patch.object(self, 'send', side_effect=error),
+            self.assertRaises(CheckWriteError),
+        ):
+            self.execute()
+        self.assertEqual(self.saved[-1]['diagnostics']['kind'], 'http')
+        self.assertEqual(self.saved[-1]['diagnostics']['http_status'], 422)
+        self.assertNotIn('private', str(self.saved[-1]))
 
     def test_uncleared_state_stops_without_another_write(self):
         self.ignore_clear = True

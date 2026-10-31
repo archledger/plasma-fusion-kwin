@@ -32,6 +32,127 @@ class CheckWriteError(ValueError):
     """A check operation was refused or has an unknown outcome; do not retry."""
 
 
+_ERROR_FIELDS = frozenset(
+    {
+        'name',
+        'head_sha',
+        'details_url',
+        'external_id',
+        'status',
+        'conclusion',
+        'completed_at',
+        'started_at',
+        'output',
+        'app_id',
+    }
+)
+_ERROR_CODES = frozenset(
+    {'missing', 'missing_field', 'invalid', 'already_exists', 'unprocessable', 'custom'}
+)
+_MAX_ERROR_BYTES = 8192
+
+
+class _CheckHTTPError(CheckWriteError):
+    def __init__(self, status, fields, hints):
+        super().__init__('App operation failed or is uncertain; reconcile before retry')
+        self.status = status
+        self.fields = fields
+        self.hints = hints
+
+
+class _CheckResponseError(CheckWriteError):
+    def __init__(self, fields):
+        super().__init__('check response does not match the operation')
+        self.fields = fields
+
+
+class _CheckTransportError(CheckWriteError):
+    """A failure caught inside the HTTP transport, not generic caller I/O."""
+
+
+def _http_error_details(error):
+    """Extract fixed field/code names only; never retain raw API error text."""
+    try:
+        raw = error.read(_MAX_ERROR_BYTES + 1)
+        if len(raw) > _MAX_ERROR_BYTES:
+            return [], []
+        value = json.loads(
+            raw.decode(),
+            object_pairs_hook=object_pairs,
+            parse_int=bounded_integer,
+            parse_float=finite_float,
+            parse_constant=reject_constant,
+        )
+        errors = value.get('errors', []) if type(value) is dict else []
+        if type(errors) is not list:
+            errors = []
+        result = []
+        for item in errors[:8]:
+            if type(item) is not dict:
+                continue
+            field, code = item.get('field'), item.get('code')
+            if (
+                type(field) is str
+                and field in _ERROR_FIELDS
+                and type(code) is str
+                and code in _ERROR_CODES
+            ):
+                pair = {'field': field, 'code': code}
+                if pair not in result:
+                    result.append(pair)
+        hints = []
+        message = value.get('message') if type(value) is dict else None
+        if type(message) is str:
+            for field in sorted(_ERROR_FIELDS):
+                pattern = rf"['\"]properties/{re.escape(field)}['\"], (?:nil|null) is not a string"
+                if re.search(pattern, message):
+                    hints.append({'field': field, 'reason': 'null_not_string'})
+        return result, hints
+    except (ValueError, TypeError, OSError, RecursionError, HTTPException):
+        return [], []
+
+
+def check_error_details(error):
+    """Return bounded, non-sensitive diagnostics from explicit exception causes."""
+    seen = set()
+    for _ in range(8):
+        if error is None or id(error) in seen:
+            break
+        seen.add(id(error))
+        if isinstance(error, (_CheckHTTPError, HTTPError)):
+            status = error.status if isinstance(error, _CheckHTTPError) else error.code
+            result = {
+                'kind': 'http',
+                'validation_errors': error.fields
+                if isinstance(error, _CheckHTTPError)
+                else [],
+            }
+            if isinstance(error, _CheckHTTPError) and error.hints:
+                result['message_hints'] = error.hints
+            if type(status) is int and 100 <= status <= 599:
+                result['http_status'] = status
+            return result
+        if isinstance(error, _CheckResponseError):
+            return {
+                'kind': 'response_mismatch',
+                'fields': [
+                    field
+                    for field in error.fields
+                    if type(field) is str and field in _ERROR_FIELDS
+                ],
+            }
+        if isinstance(error, (_CheckTransportError, URLError, HTTPException)):
+            return {'kind': 'transport'}
+        if isinstance(error, OSError):
+            return {'kind': 'io'}
+        if isinstance(error, (json.JSONDecodeError, UnicodeDecodeError)):
+            return {'kind': 'response_json'}
+        if isinstance(error, subprocess.SubprocessError):
+            return {'kind': 'subprocess'}
+        error = error.__cause__
+    return {'kind': 'unknown'}
+
+
 def _request(method, url, token, body=None):
     request = Request(
         url,
@@ -62,11 +183,16 @@ def _request(method, url, token, body=None):
             require(type(value) is dict, 'invalid check response shape')
             return value
     except HTTPError as error:
-        error.close()
-        raise CheckWriteError(
+        try:
+            fields, hints = _http_error_details(error)
+        finally:
+            error.close()
+        raise _CheckHTTPError(error.code, fields, hints) from error
+    except (URLError, HTTPException, OSError) as error:
+        raise _CheckTransportError(
             'App operation failed or is uncertain; reconcile before retry'
         ) from error
-    except (URLError, HTTPException, OSError, ValueError) as error:
+    except ValueError as error:
         raise CheckWriteError(
             'App operation failed or is uncertain; reconcile before retry'
         ) from error
@@ -159,17 +285,19 @@ class CheckReporter:
         )
 
     def _check(self, value, head, name, qid, status, conclusion):
-        require(
-            identifier(value['app']['id']) == self.policy.app_id
-            and value['name'] == name
-            and value['head_sha'] == head
-            and value['external_id'] == qid
-            and value['details_url'] == self.details_url
-            and value['status'] == status
-            and value['conclusion'] == conclusion
-            and (status == 'completed' or value['completed_at'] is None),
-            'check response does not match the operation',
-        )
+        checks = {
+            'app_id': identifier(value['app']['id']) == self.policy.app_id,
+            'name': value['name'] == name,
+            'head_sha': value['head_sha'] == head,
+            'external_id': value['external_id'] == qid,
+            'details_url': value['details_url'] == self.details_url,
+            'status': value['status'] == status,
+            'conclusion': value['conclusion'] == conclusion,
+            'completed_at': status == 'completed' or value['completed_at'] is None,
+        }
+        mismatched = [field for field, matches in checks.items() if not matches]
+        if mismatched:
+            raise _CheckResponseError(mismatched)
         return identifier(value['id'])
 
     def _identity(self, head, name, qid):
