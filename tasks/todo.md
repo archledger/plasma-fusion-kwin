@@ -46,11 +46,11 @@ history completeness.
 
 ### FC-02: Bounded one-shot write journal
 
-- [ ] Persist intent before a write and its validated acknowledgment before the
+- [x] Persist intent before a write and its validated acknowledgment before the
   next write; prevent repeated action/role attempts and unsafe journal reuse.
-- [ ] Refuse unavailable/unsafe persistence; cap the record at 64 KiB and record
+- [x] Refuse unavailable/unsafe persistence; cap the record at 64 KiB and record
   only safe fields. Simulate short writes, acknowledgment-save failure and loss.
-- [ ] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_journal.py' -v`.
+- [x] Verify: `python3 -B -m unittest discover -s tests -p 'test_check_journal.py' -v`.
 
 Dependencies: none. Scope: two proposed files, `ci/native/check_journal.py` and
 `tests/test_check_journal.py`. A journal is diagnostic evidence, not authority or
