@@ -3,11 +3,14 @@
 """Offline enforcement-probe contracts, never live GitHub evidence."""
 
 import copy
+import hashlib
+import io
 import json
 import os
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -93,6 +96,7 @@ class ContractTests(unittest.TestCase):
 
     def test_wrong_scope_extra_fields_and_boolean_ids_fail(self):
         for mutate in [
+            lambda r: r.update(success=False),
             lambda r: r.update(scope="native qualification"),
             lambda r: r.update(extra=True),
             lambda r: r.update(writer_run_id=True),
@@ -105,6 +109,7 @@ class ContractTests(unittest.TestCase):
 
     def test_case_order_identity_and_status_are_not_inferred(self):
         for mutate in [
+            lambda r: r["records"][0].update(stage="A2"),
             lambda r: r["records"].reverse(),
             lambda r: r["records"][1]["check"].update(conclusion="success"),
             lambda r: r["records"][1]["check"].update(id=800),
@@ -163,16 +168,29 @@ class StageTests(unittest.TestCase):
     def run_stage(self, stage, previous=None, fence=lambda: None):
         index = probe.STAGES.index(stage)
         run_id, nonce = 500 + index, str(index + 1) * 32
-        qid = probe.stage_qid(
-            "e" * 32, stage, run_id, probe.stage_head(stage, self.fixtures), nonce
-        )
+        origin_id, origin_nonce = run_id, nonce
+        if stage == "B3":
+            origin = previous["records"][-1]
+            origin_id, origin_nonce, qid = (
+                origin["run_id"],
+                origin["nonce"],
+                origin["qualification_id"],
+            )
+        else:
+            qid = probe.stage_qid(
+                "e" * 32, stage, run_id, probe.stage_head(stage, self.fixtures), nonce
+            )
         root = Path(self.temp.name)
-        admit = CheckJournal(
-            root / f"{stage}-admit.json",
-            qualification_id=qid,
-            run_id=run_id,
-            nonce=nonce,
-            phase="admit",
+        admit = (
+            None
+            if stage == "B3"
+            else CheckJournal(
+                root / f"{stage}-admit.json",
+                qualification_id=qid,
+                run_id=run_id,
+                nonce=nonce,
+                phase="admit",
+            )
         )
         report = (
             None
@@ -180,13 +198,17 @@ class StageTests(unittest.TestCase):
             else CheckJournal(
                 root / f"{stage}-report.json",
                 qualification_id=qid,
-                run_id=run_id,
-                nonce=nonce,
+                run_id=origin_id,
+                nonce=origin_nonce,
                 phase="report",
             )
         )
         client = probe.ValidationReporter(
-            self.policy, "fixture", run_id, fence, journal=admit
+            self.policy,
+            "fixture",
+            origin_id,
+            fence,
+            journal=admit if admit is not None else report,
         )
 
         def inventory(path, page=1, per_page=100, **kwargs):
@@ -231,6 +253,38 @@ class StageTests(unittest.TestCase):
         )
         self.assertEqual(self.server[804]["status"], "in_progress")
 
+    def test_b3_completes_only_b2_and_retains_origin_identity(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        original = copy.deepcopy(self.server)
+        result = self.run_stage("B3", previous)
+        self.assertEqual(result["writer_run_id"], 505)
+        self.assertEqual(result["records"][-1]["run_id"], 504)
+        self.assertEqual(result["records"][-1]["check"]["id"], 804)
+        self.assertEqual(self.server[804]["conclusion"], "failure")
+        self.assertTrue(
+            all(self.server[key] == original[key] for key in range(800, 804))
+        )
+        self.assertEqual([w[0] for w in self.writes][-2:], ["POST", "PATCH"])
+        self.assertEqual(len(self.server), 5)
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous)
+
+    def test_b3_cannot_reopen_an_already_completed_check(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.server[804].update(
+            status="completed",
+            conclusion="failure",
+            completed_at="2026-11-01T00:00:00Z",
+        )
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous)
+        self.assertEqual(self.writes, [])
+
     def test_fence_failure_stops_before_mutation(self):
         def fail():
             raise ValueError("changed authority")
@@ -243,6 +297,14 @@ class StageTests(unittest.TestCase):
     def test_changed_prior_record_stops_before_new_creation(self):
         first = self.run_stage("A1")
         self.server[800]["conclusion"] = "failure"
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_changed_predecessor_authority_stops_before_any_write(self):
+        first = self.run_stage("A1")
+        first["authority"] = "f" * 40
         self.writes.clear()
         with self.assertRaises(ValueError):
             self.run_stage("A2", first)
@@ -304,6 +366,171 @@ class StageTests(unittest.TestCase):
         self.assertEqual(
             self.writes[0][1]["output"]["title"], "Native qualification pending"
         )
+
+
+class PredecessorTests(unittest.TestCase):
+    def fixture(self, stage="A1"):
+        report = report_fixture(stage)
+        origin_id = report["writer_run_id"]
+        common = {
+            "workflow_id": 700,
+            "head_sha": "a" * 40,
+            "head_branch": "main",
+            "path": probe.WORKFLOW,
+            "event": "workflow_dispatch",
+            "run_attempt": 1,
+            "repository": {"id": probe.REPOSITORY_ID, "full_name": probe.REPOSITORY},
+            "head_repository": {"id": probe.REPOSITORY_ID},
+            "actor": {"id": 10, "login": "fixture"},
+            "triggering_actor": {"id": 10},
+        }
+        current = dict(
+            common,
+            id=origin_id + 1,
+            status="in_progress",
+            conclusion=None,
+            created_at="2026-11-01T02:00:00Z",
+        )
+        previous = dict(
+            common,
+            id=origin_id,
+            status="completed",
+            conclusion="success",
+            created_at="2026-11-01T00:00:00Z",
+        )
+        job = {
+            "id": 800,
+            "name": "probe",
+            "run_id": origin_id,
+            "run_attempt": 1,
+            "head_sha": "a" * 40,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-11-01T00:00:01Z",
+            "completed_at": "2026-11-01T01:30:00Z",
+        }
+        check = report["records"][-1]
+        journals = {}
+        for phase, action in [("admit", "create"), ("report", "complete")]:
+            if stage == "B2" and phase == "report":
+                continue
+            journals[phase + "-journal.json"] = {
+                "schema_version": 1,
+                "qualification_id": check["qualification_id"],
+                "run_id": origin_id,
+                "nonce": check["nonce"],
+                "phase": phase,
+                "writes": [
+                    {
+                        "role": "native",
+                        "action": action,
+                        "expected_check_id": None
+                        if phase == "admit"
+                        else check["check"]["id"],
+                        "acknowledged_check_id": check["check"]["id"],
+                        "status": "confirmed",
+                    }
+                ],
+            }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("report.json", json.dumps(report))
+            for name, value in journals.items():
+                archive.writestr(name, json.dumps(value))
+        raw = buffer.getvalue()
+        artifact = {
+            "id": 900,
+            "name": f"check-enforcement-{origin_id}-1",
+            "expired": False,
+            "size_in_bytes": len(raw),
+            "created_at": "2026-11-01T01:15:00Z",
+            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "workflow_run": {
+                "id": origin_id,
+                "repository_id": probe.REPOSITORY_ID,
+                "head_repository_id": probe.REPOSITORY_ID,
+                "head_sha": "a" * 40,
+            },
+        }
+        values = {
+            f"actions/runs/{origin_id + 1}": current,
+            f"actions/runs/{origin_id}": previous,
+            f"actions/runs/{origin_id}/attempts/1/jobs": {
+                "total_count": 1,
+                "jobs": [job],
+            },
+            f"actions/runs/{origin_id}/artifacts": {
+                "total_count": 1,
+                "artifacts": [artifact],
+            },
+            "collaborators/fixture/permission": {
+                "permission": "write",
+                "user": {"id": 10},
+            },
+        }
+        return report, current, raw, values
+
+    def load(self, current, raw, values, stage="A2"):
+        api = SimpleNamespace(
+            repository=probe.REPOSITORY,
+            get=lambda path, **kwargs: copy.deepcopy(values[path]),
+        )
+        return probe.load_predecessor(
+            api,
+            stage,
+            current["id"] - 1,
+            current,
+            launcher="a" * 40,
+            authority="d" * 40,
+            fixtures=report_fixture("A1")["fixtures"],
+            experiment_id="e" * 32,
+            download=lambda artifact_id: raw,
+        )
+
+    def test_authenticates_real_zip_and_confirmed_phase_journals(self):
+        report, current, raw, values = self.fixture()
+        self.assertEqual(self.load(current, raw, values), report)
+
+    def test_b3_authenticates_b2_pending_report_without_completion_journal(self):
+        report, current, raw, values = self.fixture("B2")
+        self.assertEqual(self.load(current, raw, values, stage="B3"), report)
+
+    def test_unconfirmed_journal_is_rejected_even_with_valid_archive_hash(self):
+        _, current, raw, values = self.fixture()
+        with zipfile.ZipFile(io.BytesIO(raw)) as source:
+            files = {name: source.read(name) for name in source.namelist()}
+        journal = json.loads(files["admit-journal.json"])
+        journal["writes"][0]["status"] = "pending"
+        files["admit-journal.json"] = json.dumps(journal).encode()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as target:
+            for name, value in files.items():
+                target.writestr(name, value)
+        changed = buffer.getvalue()
+        artifact = values["actions/runs/500/artifacts"]["artifacts"][0]
+        artifact.update(
+            digest="sha256:" + hashlib.sha256(changed).hexdigest(),
+            size_in_bytes=len(changed),
+        )
+        with self.assertRaises(ValueError):
+            self.load(current, changed, values)
+
+    def test_bad_source_attempt_artifact_or_timing_refuses_predecessor(self):
+        for mutate in [
+            lambda v: v["actions/runs/500"].update(head_sha="f" * 40),
+            lambda v: v["actions/runs/500"].update(run_attempt=2),
+            lambda v: v["actions/runs/500"].update(workflow_id=999),
+            lambda v: v["actions/runs/500/artifacts"]["artifacts"][0].update(
+                digest="sha256:" + "0" * 64
+            ),
+            lambda v: v["actions/runs/500/attempts/1/jobs"]["jobs"][0].update(
+                completed_at="2026-11-01T03:00:00Z"
+            ),
+        ]:
+            _, current, raw, values = self.fixture()
+            mutate(values)
+            with self.assertRaises(ValueError):
+                self.load(current, raw, values)
 
 
 class FixtureTests(unittest.TestCase):
@@ -449,7 +676,9 @@ class FixtureTests(unittest.TestCase):
             self.commit("B", self.base),
         ]:
             with self.subTest(bad=bad), self.assertRaises(ValueError):
-                self.verify(dict(self.fixtures, case_a=bad))
+                self.verify(
+                    dict(self.fixtures, case_a=bad, case_b=self.commit("B", bad))
+                )
 
     def test_second_fixture_must_descend_from_first(self):
         bad = self.commit("B", self.base)

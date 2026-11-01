@@ -17,13 +17,23 @@ from ci.native.proof_api import (
     object_pairs,
     reject_constant,
 )
-from ci.native.qualification import canonical_json, digest, identifier, keys, require
+from ci.native.qualification import (
+    canonical_json,
+    digest,
+    identifier,
+    keys,
+    read_archive,
+    require,
+    timestamp,
+)
 from ci.native.signed_merge import verify_signed_commit
 
 REPOSITORY = "archledger/plasma-fusion-kwin"
 REPOSITORY_ID = 1439058578
 APP_ID = 5544780
 CHECK_NAME = "Native KWin / trusted"
+WORKFLOW = ".github/workflows/check-enforcement-probe.yml"
+MAX_REPORT_BYTES = 64 * 1024
 SCOPE = "disposable check-enforcement probe only; no native qualification"
 MARKER = "check-enforcement-fixture.json"
 STAGES = ("A1", "A2", "A3", "B1", "B2", "B3")
@@ -231,6 +241,150 @@ def validate_report(value):
     return value
 
 
+def verify_probe_run(api, run_id, launcher, *, completed):
+    run = api.get(f"actions/runs/{identifier(run_id)}")
+    require(
+        run["id"] == run_id
+        and run["repository"]["id"] == REPOSITORY_ID
+        and run["repository"]["full_name"] == REPOSITORY
+        and run["head_repository"]["id"] == REPOSITORY_ID
+        and run["head_sha"] == launcher
+        and run["head_branch"] == "main"
+        and run["path"] == WORKFLOW
+        and run["event"] == "workflow_dispatch"
+        and type(run["run_attempt"]) is int
+        and run["run_attempt"] == 1
+        and run["status"] == ("completed" if completed else "in_progress")
+        and run["conclusion"] == ("success" if completed else None)
+        and identifier(run["actor"]["id"]) == identifier(run["triggering_actor"]["id"]),
+        "probe workflow identity differs",
+    )
+    identifier(run["workflow_id"])
+    permission = api.get("collaborators/" + run["actor"]["login"] + "/permission")
+    require(
+        permission["user"]["id"] == run["actor"]["id"]
+        and permission["permission"] in {"write", "maintain", "admin"},
+        "probe actor is not authorized",
+    )
+    return run
+
+
+def verify_phase_journal(value, record, phase):
+    keys(
+        value,
+        ["schema_version", "qualification_id", "run_id", "nonce", "phase", "writes"],
+    )
+    require(
+        type(value["schema_version"]) is int
+        and value["schema_version"] == 1
+        and value["qualification_id"] == record["qualification_id"]
+        and value["run_id"] == record["run_id"]
+        and type(value["run_id"]) is int
+        and value["nonce"] == record["nonce"]
+        and value["phase"] == phase,
+        "preceding journal identity differs",
+    )
+    check_id = record["check"]["id"]
+    require(
+        value["writes"]
+        == [
+            {
+                "role": "native",
+                "action": "create" if phase == "admit" else "complete",
+                "expected_check_id": None if phase == "admit" else check_id,
+                "acknowledged_check_id": check_id,
+                "status": "confirmed",
+            }
+        ],
+        "preceding journal write is not acknowledged",
+    )
+
+
+def load_predecessor(
+    api,
+    stage,
+    predecessor_run,
+    current_run,
+    *,
+    launcher,
+    authority,
+    fixtures,
+    experiment_id,
+    download,
+):
+    """Authenticate a bounded prior report and its acknowledged writes."""
+    require(stage in STAGES, "invalid predecessor stage")
+    if stage == "A1":
+        require(predecessor_run is None, "first stage has a predecessor")
+        return None
+    current = verify_probe_run(api, current_run["id"], launcher, completed=False)
+    previous = verify_probe_run(
+        api, identifier(predecessor_run), launcher, completed=True
+    )
+    require(
+        previous["id"] != current["id"]
+        and previous["workflow_id"] == current["workflow_id"]
+        and previous["actor"]["id"] == current["actor"]["id"],
+        "preceding workflow differs",
+    )
+    jobs = get_all(api, f"actions/runs/{predecessor_run}/attempts/1/jobs", key="jobs")
+    require(len(jobs) == 1, "unexpected preceding jobs")
+    job = jobs[0]
+    require(
+        job["name"] == "probe"
+        and job["run_id"] == predecessor_run
+        and type(job["run_attempt"]) is int
+        and job["run_attempt"] == 1
+        and job["head_sha"] == launcher
+        and job["status"] == "completed"
+        and job["conclusion"] == "success"
+        and timestamp(previous["created_at"])
+        <= timestamp(job["started_at"])
+        <= timestamp(job["completed_at"])
+        <= timestamp(current["created_at"]),
+        "preceding job identity or order differs",
+    )
+    artifacts = get_all(
+        api, f"actions/runs/{predecessor_run}/artifacts", key="artifacts"
+    )
+    require(len(artifacts) == 1, "unexpected preceding artifacts")
+    artifact = artifacts[0]
+    association = artifact["workflow_run"]
+    require(
+        artifact["name"] == f"check-enforcement-{predecessor_run}-1"
+        and artifact["expired"] is False
+        and association["id"] == predecessor_run
+        and association["repository_id"]
+        == association["head_repository_id"]
+        == REPOSITORY_ID
+        and association["head_sha"] == launcher
+        and timestamp(job["started_at"])
+        <= timestamp(artifact["created_at"])
+        <= timestamp(job["completed_at"]),
+        "preceding artifact provenance differs",
+    )
+    previous_stage = STAGES[STAGES.index(stage) - 1]
+    limits = {"report.json": MAX_REPORT_BYTES, "admit-journal.json": MAX_REPORT_BYTES}
+    if previous_stage != "B2":
+        limits["report-journal.json"] = MAX_REPORT_BYTES
+    files = read_archive(download(identifier(artifact["id"])), artifact, limits)
+    report = validate_report(files["report.json"])
+    require(
+        report["writer_run_id"] == predecessor_run
+        and report["stage"] == previous_stage
+        and report["launcher"] == launcher
+        and report["authority"] == authority
+        and report["fixtures"] == fixtures
+        and report["experiment_id"] == experiment_id,
+        "preceding report context differs",
+    )
+    record = report["records"][-1]
+    verify_phase_journal(files["admit-journal.json"], record, "admit")
+    if previous_stage != "B2":
+        verify_phase_journal(files["report-journal.json"], record, "report")
+    return report
+
+
 class ValidationReporter(CheckReporter):
     """Change display text only; parent transport, identity and journal stay intact."""
 
@@ -324,8 +478,7 @@ def exercise(
     previous=None,
     save,
 ):
-    """One creation stage using real client guards; all external I/O is caller-scoped."""
-    require(stage in CREATION_STAGES, "unsupported creation stage")
+    """One stage using real client guards; all external I/O is caller-scoped."""
     validate_fixtures(fixtures, launcher, authority)
     records = previous_records(
         previous,
@@ -338,9 +491,15 @@ def exercise(
         writer_nonce=writer_nonce,
     )
     head = stage_head(stage, fixtures)
-    qid = stage_qid(experiment_id, stage, writer_run_id, head, writer_nonce)
+    origin = records[-1] if stage == "B3" else None
+    origin_run = origin["run_id"] if origin else writer_run_id
+    qid = (
+        origin["qualification_id"]
+        if origin
+        else stage_qid(experiment_id, stage, writer_run_id, head, writer_nonce)
+    )
     require(
-        type(client) is ValidationReporter and client.run_id == writer_run_id,
+        type(client) is ValidationReporter and client.run_id == origin_run,
         "wrong check writer",
     )
     value = {
@@ -359,20 +518,23 @@ def exercise(
     try:
         observe_history(client, records)
         observe_inventory(client, head, records)
-        check_id = client.begin(head, CHECK_NAME, qid)
+        check_id = (
+            origin["check"]["id"] if origin else client.begin(head, CHECK_NAME, qid)
+        )
         pending = client._send("GET", f"check-runs/{check_id}")
         require(
             pending["output"] == {"title": "Validation only", "summary": SCOPE},
             "probe output is not validation-only",
         )
-        record = {
+        record = origin or {
             "stage": stage,
             "run_id": writer_run_id,
             "nonce": writer_nonce,
             "qualification_id": qid,
             "check": snapshot(pending),
         }
-        records.append(record)
+        if origin is None:
+            records.append(record)
         save(copy.deepcopy(value))
         outcome = stage_outcome(stage)
         if outcome is not None:

@@ -41,23 +41,30 @@ results are not live GitHub evidence. Production display defaults stayed intact.
 
 ## EP-03: Authenticated B3 pending-check completion
 
-- [ ] Authenticate B2's completed run, job, artifact and confirmed creation journal;
+- [x] Authenticate B2's completed run, job, artifact and confirmed creation journal;
   derive its ID/QID/nonce/URL rather than accepting an arbitrary ID.
-- [ ] Require the exact pending check; complete it as failure with a fresh report
+- [x] Require the exact pending check; complete it as failure with a fresh report
   journal and reporter constructed with B2's origin run ID/QID/nonce, preserving
   its details URL while separately authenticating and recording the B3 writer.
-- [ ] Reject wrong source/experiment/predecessor, terminal checks, replay and
+- [x] Reject wrong source/experiment/predecessor, terminal checks, replay and
   unknown creation; do not create a replacement or bypass changed-target fences.
 
 Verification: positive B3 and one-variable-at-a-time refusal tests, full real
 writer/journal path with transport fakes. Dependencies: EP-02. Same two files. Size: M.
 
+EP-03: authenticated ZIP/journal provenance and B3 completion tests passed.
+The B3 client retains B2's check identity while reporting the new writer.
+
 ## Checkpoint A: Source mechanics
 
-- [ ] Full suite, manifest validation, compilation, Ruff and whitespace pass.
-- [ ] Targeted mutations removing fixture/source/authority/predecessor/check-ID
+- [x] Full suite, manifest validation, compilation, Ruff and whitespace pass.
+- [x] Targeted mutations removing fixture/source/authority/predecessor/check-ID
   guards are caught; restore exact source after each isolated experiment.
-- [ ] No production behavior changed and no simulated result is called live proof.
+- [x] No production behavior changed and no simulated result is called live proof.
+
+Checkpoint A: 591 full-suite tests and five targeted mutations passed. A first
+mutation exposed a fixture-scope test confounded by a wrong parent; its fixture
+was corrected so the scope guard is independently exercised. No live calls ran.
 
 ## EP-04: Main-only manual workflow
 
