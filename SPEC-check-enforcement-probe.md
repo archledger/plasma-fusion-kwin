@@ -157,6 +157,16 @@ Before each App write, the worker verifies:
 - Signed, new fixture objects and allowed ref names; no production target.
 - Current expected test tip.
 - Complete bounded predecessor artifacts, API digests and check history.
+- The unchanged experiment expiry has not passed, including after slow fences
+  and immediately before sending a check mutation. An already-expired queued
+  invocation must stop before App-token creation.
+
+The owner-selected expiry correction uses a required canonical UTC-seconds
+`expires_at` workflow input, shared by all six stages and bounded to one hour
+after run creation. Probe report schema 2 and each stage QID bind this value;
+predecessors cannot roll it forward. Historical report verification remains
+possible after expiry. B3 has no cleanup exemption. Requests already in flight
+may finish later and still require outcome reconciliation, never blind retry.
 
 The maintainer verifies those identities plus the complete protection/App mapping
 immediately before and after each test-target update attempt. A result counts
@@ -210,6 +220,7 @@ gh workflow run check-enforcement-probe.yml \
   --field experiment_id="$APPROVED_EXPERIMENT_ID" \
   --field stage=A1 \
   --field authority_sha="$APPROVED_AUTHORITY_SHA" \
+  --field expires_at="$APPROVED_EXPIRES_AT" \
   --field predecessor_run=""
 ```
 

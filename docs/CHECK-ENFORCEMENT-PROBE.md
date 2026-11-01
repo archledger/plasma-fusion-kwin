@@ -112,12 +112,26 @@ gh workflow run check-enforcement-probe.yml \
   --repo archledger/plasma-fusion-kwin --ref main \
   --field experiment_id="$EXPERIMENT_ID" \
   --field stage=A2 --field authority_sha="$AUTHORITY_SHA" \
+  --field expires_at="$EXPIRES_AT" \
   --field predecessor_run="$VERIFIED_A1_RUN"
 ```
 
 A1 has an empty predecessor. Every other stage requires the immediately prior
 run from the same experiment, launcher and actor. Each worker has an eight-minute
 limit; the whole operator experiment has a one-hour limit. Do not blindly rerun.
+
+Set `EXPIRES_AT` once from the approved operator start time, using canonical UTC
+seconds (`YYYY-MM-DDTHH:MM:SSZ`), and pass the identical value to every stage.
+An expired queued invocation refuses before App-token creation. The worker
+rechecks expiry after network fences and immediately before each check request,
+including B3 cleanup; it cannot extend the deadline to tidy a pending check.
+The expiry cannot exceed one hour after run creation, and predecessor reports
+must carry the same value. An in-flight request can still complete after expiry;
+its outcome must be reconciled without retry or a deadline extension.
+
+Probe reports now use schema version 2. Their expiry is included in each stage's
+QID, and historical report validation does not require the expiry to remain in
+the future. Version-1 reports are not accepted as current-stage predecessors.
 
 ## B3 is a completion, not a new origin
 
