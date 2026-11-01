@@ -3,7 +3,7 @@
 # Check-enforcement-probe tasks
 
 Status: EP-01–EP-06 source implementation was approved on 2026-11-01.
-Local implementation and review are complete; draft publication is next.
+Local implementation and review are complete in draft PR17.
 EP-07–EP-08 still need separate approvals.
 See [plan.md](plan.md) and the [approved spec](../../SPEC-check-enforcement-probe.md).
 No inherited checkbox is completion evidence for this module.
@@ -116,7 +116,7 @@ Pinned REUSE passed for both the source tree and a tree containing the marker.
   pinned Actionlint and REUSE on the exact candidate tree.
 - [x] Resolve independent scoped review findings; preserve red/green, mutation,
   source-diff and artifact evidence without weakening existing checks.
-- [ ] Prepare signed/DCO commits and a source-only draft PR, retaining old branches;
+- [x] Prepare signed/DCO commits and a source-only draft PR, retaining old branches;
   do not merge or dispatch from source-plan approval.
 
 Verification: exact-revision evidence and signed source history; PR scope excludes
@@ -127,12 +127,17 @@ Final review required direct runtime authorization and pre-write drift tests.
 Added a separate runtime test file without changing the worker or client.
 All 607 tests pass. Four new in-memory guard mutations are caught by assertions;
 the runtime source remains unchanged. Follow-up review closed the finding.
-Source publication and hosted validation remain pending.
+Source is submitted in [draft PR17](https://github.com/archledger/plasma-fusion-kwin/pull/17).
+Both hosted runs at `10bb6bb` passed 607 tests, REUSE 136/136 and the pinned patch
+application check: [push](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41311840576)
+and [PR](https://github.com/archledger/plasma-fusion-kwin/actions/runs/41311849562).
+Both downloaded artifact archives matched their API SHA-256 digests.
+Subsequent source-status documentation changes require their own hosted checks.
 
 ## Checkpoint B: Source acceptance
 
-- [ ] EP-01–06 source gates passed on the exact submitted revision.
-- [ ] No required review finding remains; limits and untested live behavior recorded.
+- [x] EP-01–06 source gates passed on the exact submitted revision.
+- [x] No required review finding remains; limits and untested live behavior recorded.
 - [ ] Obtain separate source-only main-merge approval. Do not treat this unchecked
   approval reminder as permission to merge.
 

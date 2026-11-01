@@ -4,8 +4,8 @@
 
 Status: specification and EP-01–EP-06 source plan approved by the owner on
 2026-11-01, including maintainer-side protection reads. Source implementation
-and independent review are complete; draft publication is next. Source merge,
-live protection changes and dispatch remain separate gates.
+and independent review are complete in draft PR17. Source merge, live protection
+changes and dispatch remain separate gates.
 
 Module: `check-enforcement-probe` in `CAPABILITY-MAP.md`.
 

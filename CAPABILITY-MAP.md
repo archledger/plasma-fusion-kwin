@@ -40,6 +40,7 @@ Build order: **check-enforcement-probe → finalizer-integration**.
 - The second module's specification must use the first module's observed server
   behavior; a surprising result is a blocker, not a reason to weaken checks.
 
-The first module's specification and source implementation plan are approved.
-Implement `tasks/check-enforcement-probe/todo.md` EP-01–EP-06 first. Source merges
-and GitHub settings/live operations remain separately gated.
+The first module's EP-01–EP-06 source implementation is reviewed and submitted
+in [draft PR17](https://github.com/archledger/plasma-fusion-kwin/pull/17).
+Its live behavior remains unqualified. Source merges and GitHub settings/live
+operations remain separately gated; see `tasks/check-enforcement-probe/todo.md`.
