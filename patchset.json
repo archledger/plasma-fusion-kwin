@@ -1,28 +1,28 @@
 {
-  "schema_version": 1,
-  "upstream": {
-    "repository": "https://invent.kde.org/plasma/kwin.git",
-    "release": "v6.7.5",
-    "commit": "ab7df7ccb7c6af20f4b279cd6220f7cd3d2267d7"
-  },
-  "expected_tree": "b33310c0a440ed968f82cd03d94359ad435eaeb1",
-  "patches": [
-    {
-      "id": "offscreen-view-opacity",
-      "file": "patches/0001-offscreen-view-opacity.patch",
-      "sha256": "c97b376be0d5267d6cd48e0aa99be41df1560488182988480632ab91b1ec7bcf",
-      "paths": [
-        "autotests/integration/CMakeLists.txt",
-        "autotests/integration/offscreenquickview_test.cpp",
-        "src/effect/offscreenquickview.cpp"
-      ],
-      "provenance": {
-        "base_repository": "https://invent.kde.org/plasma/kwin.git",
-        "qualification_commit": "af822fbb8663f42e360bfa59a333bce3781b9a8e",
-        "qualification_commit_published": false,
-        "public_submission_commit": "https://invent.kde.org/archledger/kwin/-/commit/02b36adce62958bd036860a8f9607eb6b7deee0c",
-        "upstream_merge_request": "https://invent.kde.org/plasma/kwin/-/merge_requests/10275"
-      }
-    }
-  ]
+    "schema_version": 1,
+    "upstream": {
+        "repository": "https://invent.kde.org/plasma/kwin.git",
+        "release": "v6.7.5",
+        "commit": "ab7df7ccb7c6af20f4b279cd6220f7cd3d2267d7"
+    },
+    "expected_tree": "b33310c0a440ed968f82cd03d94359ad435eaeb1",
+    "patches": [
+        {
+            "id": "offscreen-view-opacity",
+            "file": "patches/0001-offscreen-view-opacity.patch",
+            "sha256": "c97b376be0d5267d6cd48e0aa99be41df1560488182988480632ab91b1ec7bcf",
+            "paths": [
+                "autotests/integration/CMakeLists.txt",
+                "autotests/integration/offscreenquickview_test.cpp",
+                "src/effect/offscreenquickview.cpp"
+            ],
+            "provenance": {
+                "base_repository": "https://invent.kde.org/plasma/kwin.git",
+                "qualification_commit": "af822fbb8663f42e360bfa59a333bce3781b9a8e",
+                "qualification_commit_published": false,
+                "public_submission_commit": "https://invent.kde.org/archledger/kwin/-/commit/02b36adce62958bd036860a8f9607eb6b7deee0c",
+                "upstream_merge_request": "https://invent.kde.org/plasma/kwin/-/merge_requests/10275"
+            }
+        }
+    ]
 }
