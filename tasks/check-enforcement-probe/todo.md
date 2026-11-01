@@ -92,17 +92,22 @@ failure and B3's origin/writer split. No workflow was dispatched.
 
 ## EP-05: Operator procedure and matrix accounting
 
-- [ ] Document signed fixture creation, exact temporary target protection,
+- [x] Document signed fixture creation, exact temporary target protection,
   serialized stages, six update attempts and the single wrong-provider status.
-- [ ] Require actual server rejection reasons and ref readback; specify stop rules,
+- [x] Require actual server rejection reasons and ref readback; specify stop rules,
   maintainer-side protection reads before/after every attempt, authenticated B3
   cleanup and owned protection restoration without ref deletion.
-- [ ] Keep source installation, live-package approval, native qualification and
+- [x] Keep source installation, live-package approval, native qualification and
   finalizer work explicitly separate; never claim server behavior from mocks.
 
 Verification: compare each spec matrix row/budget against the documented flow;
 check links, commands and unchanged production targets.
 Dependencies: EP-04. Files: new probe guide and module docstrings if needed. Size: S.
+
+EP-05: the guide records the six-stage matrix and explicit maintainer-only writes.
+The exact fixture marker path is added to the existing CC0 data annotation so
+future disposable commits stay REUSE-compliant without changing a second file.
+Pinned REUSE passed for both the source tree and a tree containing the marker.
 
 ## EP-06: Source validation, review and draft PR
 
