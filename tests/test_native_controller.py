@@ -25,6 +25,7 @@ class NativeControllerTest(unittest.TestCase):
             self.assertEqual(load_invocation(root), value)
             output = io.StringIO()
             with patch.object(controller.os, 'geteuid', return_value=1000), \
+                    patch.object(controller.Path, 'read_text', return_value='fixture proc context'), \
                     patch.object(controller, 'validate_confinement', side_effect=ValueError('stop before devices')), \
                     patch('sys.stdout', output):
                 self.assertEqual(controller.main('native', root), 1)
@@ -64,6 +65,7 @@ class NativeControllerTest(unittest.TestCase):
                 return real_open(path, flags, *args, **kwargs)
 
             with patch.object(controller.os, 'geteuid', return_value=1000), \
+                    patch.object(controller.Path, 'read_text', return_value='fixture proc context'), \
                     patch.object(controller.os, 'open', side_effect=open_device), \
                     patch.object(controller.fcntl, 'ioctl', return_value=12), \
                     patch.object(controller, 'validate_confinement'), \
@@ -76,6 +78,33 @@ class NativeControllerTest(unittest.TestCase):
                 self.assertEqual(controller.main('native', root), 1)
             self.assertIn('python3 -m ci.native.guest ' + nonce + ' native', (root / 'seed/user-data').read_text())
             self.assertTrue(all(call.args[0][0] in {'qemu-img', 'xorriso'} for call in commands.call_args_list))
+
+    def test_unavailable_confinement_context_stops_before_device_access(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'native-input').mkdir()
+            (root / 'native-input/invocation.json').write_text(json.dumps({
+                'nonce': 'a' * 32, 'qualification_id': 'b' * 64,
+            }))
+            real_open = os.open
+
+            def reject_device(path, flags, *args, **kwargs):
+                self.assertNotEqual(str(path), '/dev/kvm')
+                return real_open(path, flags, *args, **kwargs)
+
+            output = io.StringIO()
+            with patch.object(controller.os, 'geteuid', return_value=1000), \
+                    patch.object(controller.Path, 'read_text', side_effect=OSError(22, 'fixture unavailable context')), \
+                    patch.object(controller.os, 'open', side_effect=reject_device), \
+                    patch.object(controller, 'validate_confinement') as confinement, \
+                    patch.object(controller.subprocess, 'run') as commands, \
+                    patch('sys.stdout', output):
+                self.assertEqual(controller.main('native', root), 1)
+            report = json.loads(output.getvalue())
+            self.assertFalse(report['success'])
+            self.assertIn('fixture unavailable context', report['error'])
+            confinement.assert_not_called()
+            commands.assert_not_called()
 
     def test_qemu_only_adds_readonly_input_medium(self):
         command = native_command(Path('/work'))
