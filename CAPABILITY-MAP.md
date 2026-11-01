@@ -9,14 +9,16 @@ live-test configuration and execution still require their separate approvals.
 | Module ID | Responsibility | Depends on |
 |---|---|---|
 | `check-enforcement-probe` | On disposable GitHub refs, establish whether the required App/context rejects absent checks and stale success paired with a current pending/failure state, while accepting the current-success control. Preserve the actual server rejection reason. | Existing fresh-check client and journals; exact sandbox/ref/rule approval |
-| `finalizer-integration` | Join verified native evidence, current policy, exclusive finalizing ownership and the exact-result update. Validate success, stale ownership/base, rejection and unknown-outcome handling without changing production `main`. | `check-enforcement-probe` result; existing signed-state/proof/update primitives |
+| [`finalizer-integration`](SPEC-finalizer-integration.md) | Join verified native evidence, current policy, exclusive finalizing ownership and the exact-result update. Validate success, stale ownership/base, rejection and unknown-outcome handling without changing production `main` during qualification. | `check-enforcement-probe` result; existing signed-state/proof/update primitives |
 
 Build order: **check-enforcement-probe → finalizer-integration**.
 
-## Existing gaps
+## Baseline and remaining gaps
 
-- The current A/B/C probe validates check creation/completion and history, not
-  GitHub's protected-ref selection behavior or a controlled pending state.
+- The earlier A/B/C probe validated check creation/completion and history. The
+  completed R4 experiment additionally verified bounded protected-ref selection
+  with missing, failed, successful and deliberately pending checks. It did not
+  qualify the complete finalizer or universal provider binding.
 - `push_exact_merge` is a low-level primitive hard-wired to `refs/heads/main`.
   It is not a complete finalizer or safe to point at the production repository
   merely to demonstrate a test.
@@ -40,7 +42,10 @@ Build order: **check-enforcement-probe → finalizer-integration**.
 - The second module's specification must use the first module's observed server
   behavior; a surprising result is a blocker, not a reason to weaken checks.
 
-The first module's EP-01–EP-06 source implementation is reviewed and submitted
-in [draft PR17](https://github.com/archledger/plasma-fusion-kwin/pull/17).
-Its live behavior remains unqualified. Source merges and GitHub settings/live
-operations remain separately gated; see `tasks/check-enforcement-probe/todo.md`.
+The first module's source was integrated through
+[PR17](https://github.com/archledger/plasma-fusion-kwin/pull/17) and
+[PR18](https://github.com/archledger/plasma-fusion-kwin/pull/18). R4 completed on
+2026-11-01 with six stages, five expected rejections, one accepted update and
+restored temporary protection. Its retained records are input to the second
+module's approved specification, not production-finalization authority.
+Source integration and all GitHub settings/live operations remain separately gated.
