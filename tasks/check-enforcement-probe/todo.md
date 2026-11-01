@@ -9,15 +9,19 @@ No inherited checkbox is completion evidence for this module.
 
 ## EP-01: Strict fixture and report contracts
 
-- [ ] Derive only approved experiment refs; verify signed fixture marker,
+- [x] Derive only approved experiment refs; verify signed fixture marker,
   parent graph and expected target/source/authority identities.
-- [ ] Define strict stage reports with separate writer/check-origin identities;
+- [x] Define strict stage reports with separate writer/check-origin identities;
   reject wrong scope, unknown fields, replay, malformed IDs and incomplete history.
-- [ ] Verify positive/refusal cases with real temporary Git fixtures and ephemeral
+- [x] Verify positive/refusal cases with real temporary Git fixtures and ephemeral
   test signing material; perform no network write.
 
 Verification: focused `test_check_enforcement_probe.py` suite, Ruff and whitespace.
 Dependencies: approved plan. Files: new probe module and its test file. Size: S.
+
+EP-01: 9 focused tests and 578 total tests passed, including real disposable
+signatures and wrong marker/parent/unsigned refusals. Ruff and formatting checks
+passed. This is local contract validation, not live enforcement evidence.
 
 ## EP-02: Fresh-check stages and validation-only output
 
