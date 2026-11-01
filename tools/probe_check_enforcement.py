@@ -10,6 +10,7 @@ import re
 import subprocess
 import uuid
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import build_opener
@@ -61,6 +62,30 @@ CHECK_FIELDS = (
     "completed_at",
     "app",
 )
+
+
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def expiry_time(value):
+    require(
+        type(value) is str
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value),
+        "invalid enforcement expiry",
+    )
+    return timestamp(value)
+
+
+def require_unexpired(value, *, created_at=None):
+    expiry = expiry_time(value)
+    if created_at is not None:
+        require(
+            timedelta(0) < expiry - timestamp(created_at) <= timedelta(hours=1),
+            "enforcement expiry exceeds the one-hour run window",
+        )
+    require(_now() < expiry, "enforcement deadline expired")
+    return expiry
 
 
 def experiment_refs(experiment_id):
