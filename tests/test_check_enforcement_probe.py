@@ -1,0 +1,928 @@
+# SPDX-FileCopyrightText: 2026 Wisbendji Fimerlus <archledger236@gmail.com>
+# SPDX-License-Identifier: GPL-2.0-or-later
+"""Offline enforcement-probe contracts, never live GitHub evidence."""
+
+import contextlib
+import copy
+import hashlib
+import io
+import json
+import os
+import subprocess
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
+
+from ci.native.check_journal import CheckJournal
+from ci.native.checks import CheckReporter, CheckWriteError
+from tools import probe_check_enforcement as probe
+
+
+def report_fixture(stage):
+    fixtures = {"base": "a" * 40, "case_a": "b" * 40, "case_b": "c" * 40}
+    count = min(probe.STAGES.index(stage) + 1, 5)
+    records = []
+    for index, origin in enumerate(probe.STAGES[:count]):
+        run_id, nonce = 500 + index, str(index + 1) * 32
+        head = fixtures["case_a" if origin.startswith("A") else "case_b"]
+        qid = probe.stage_qid("e" * 32, origin, run_id, head, nonce)
+        outcome = (
+            None
+            if origin == "B2" and stage != "B3"
+            else ("failure" if origin in {"A2", "B2"} else "success")
+        )
+        records.append(
+            {
+                "stage": origin,
+                "run_id": run_id,
+                "nonce": nonce,
+                "qualification_id": qid,
+                "check": {
+                    "id": 800 + index,
+                    "name": probe.CHECK_NAME,
+                    "head_sha": head,
+                    "external_id": qid,
+                    "details_url": f"https://github.com/{probe.REPOSITORY}/actions/runs/{run_id}",
+                    "status": "in_progress" if outcome is None else "completed",
+                    "conclusion": outcome,
+                    "completed_at": None if outcome is None else "2026-11-01T00:00:00Z",
+                    "app": {"id": probe.APP_ID},
+                },
+            }
+        )
+    index = probe.STAGES.index(stage)
+    return {
+        "success": True,
+        "schema_version": 1,
+        "scope": probe.SCOPE,
+        "experiment_id": "e" * 32,
+        "stage": stage,
+        "launcher": "a" * 40,
+        "authority": "d" * 40,
+        "writer_run_id": 500 + index,
+        "writer_nonce": str(index + 1) * 32,
+        "fixtures": fixtures,
+        "records": records,
+    }
+
+
+class ContractTests(unittest.TestCase):
+    def test_refs_are_derived_without_accepting_a_target_path(self):
+        refs = probe.experiment_refs("e" * 32)
+        self.assertEqual(
+            refs["target"],
+            "refs/heads/validation/check-enforcement-" + "e" * 32 + "-target",
+        )
+        self.assertEqual(set(refs), {"target", "case_a", "case_b"})
+        for bad in ["", "0" * 32, "../main", True, "e" * 31, "E" * 32]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                probe.experiment_refs(bad)
+
+    def test_each_stage_has_a_strict_complete_report(self):
+        for stage in probe.STAGES:
+            value = report_fixture(stage)
+            self.assertEqual(probe.validate_report(value), value)
+
+    def test_b3_keeps_the_origin_identity_and_uses_a_new_writer(self):
+        report = report_fixture("B3")
+        self.assertNotEqual(report["writer_run_id"], report["records"][-1]["run_id"])
+        self.assertEqual(report["records"][-1]["stage"], "B2")
+        wrong = copy.deepcopy(report)
+        wrong["records"][-1]["run_id"] = report["writer_run_id"]
+        with self.assertRaises(ValueError):
+            probe.validate_report(wrong)
+
+    def test_wrong_scope_extra_fields_and_boolean_ids_fail(self):
+        for mutate in [
+            lambda r: r.update(success=False),
+            lambda r: r.update(scope="native qualification"),
+            lambda r: r.update(extra=True),
+            lambda r: r.update(writer_run_id=True),
+            lambda r: r.update(stage="C1"),
+        ]:
+            value = report_fixture("A1")
+            mutate(value)
+            with self.assertRaises(ValueError):
+                probe.validate_report(value)
+
+    def test_case_order_identity_and_status_are_not_inferred(self):
+        for mutate in [
+            lambda r: r["records"][0].update(stage="A2"),
+            lambda r: r["records"].reverse(),
+            lambda r: r["records"][1]["check"].update(conclusion="success"),
+            lambda r: r["records"][1]["check"].update(id=800),
+            lambda r: r["records"][1]["check"].update(head_sha="c" * 40),
+            lambda r: r["fixtures"].update(base="d" * 40),
+        ]:
+            value = report_fixture("A2")
+            mutate(value)
+            with self.assertRaises(ValueError):
+                probe.validate_report(value)
+
+    def test_pending_is_not_a_success_and_b3_requires_failure(self):
+        pending = report_fixture("B2")
+        self.assertIsNone(pending["records"][-1]["check"]["conclusion"])
+        pending["records"][-1]["check"].update(
+            status="completed",
+            conclusion="success",
+            completed_at="2026-11-01T00:00:00Z",
+        )
+        with self.assertRaises(ValueError):
+            probe.validate_report(pending)
+
+
+class StageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(
+            dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None
+        )
+        self.addCleanup(self.temp.cleanup)
+        self.server, self.writes, self.saved = {}, [], []
+        self.fixtures = report_fixture("A1")["fixtures"]
+        self.policy = SimpleNamespace(
+            repository=probe.REPOSITORY,
+            repository_id=probe.REPOSITORY_ID,
+            app_id=probe.APP_ID,
+            check_name=probe.CHECK_NAME,
+        )
+
+    def send(self, method, url, token, body=None):
+        resource = url.split("/repos/" + probe.REPOSITORY + "/")[1]
+        if method == "POST":
+            check_id = 800 + len(self.server)
+            self.server[check_id] = dict(
+                copy.deepcopy(body),
+                id=check_id,
+                app={"id": probe.APP_ID},
+                conclusion=None,
+                completed_at=None,
+            )
+            self.server[check_id]["output"].update(
+                text=None,
+                annotations_count=0,
+                annotations_url=f"https://api.github.com/check-runs/{check_id}/annotations",
+            )
+        else:
+            check_id = int(resource.split("/")[-1])
+            if method == "PATCH":
+                self.server[check_id].update(
+                    copy.deepcopy(body), completed_at="2026-11-01T00:00:00Z"
+                )
+                self.server[check_id]["output"].update(
+                    text=None,
+                    annotations_count=0,
+                    annotations_url=f"https://api.github.com/check-runs/{check_id}/annotations",
+                )
+        if method != "GET":
+            self.writes.append((method, copy.deepcopy(body)))
+        return copy.deepcopy(self.server[check_id])
+
+    def run_stage(
+        self, stage, previous=None, fence=lambda: None, identity_overrides=None
+    ):
+        index = probe.STAGES.index(stage)
+        run_id, nonce = 500 + index, str(index + 1) * 32
+        origin_id, origin_nonce = run_id, nonce
+        if stage == "B3":
+            origin = previous["records"][-1]
+            origin_id, origin_nonce, qid = (
+                origin["run_id"],
+                origin["nonce"],
+                origin["qualification_id"],
+            )
+        else:
+            qid = probe.stage_qid(
+                "e" * 32, stage, run_id, probe.stage_head(stage, self.fixtures), nonce
+            )
+        root = Path(self.temp.name)
+        admit = (
+            None
+            if stage == "B3"
+            else CheckJournal(
+                root / f"{stage}-admit.json",
+                qualification_id=qid,
+                run_id=run_id,
+                nonce=nonce,
+                phase="admit",
+            )
+        )
+        report = (
+            None
+            if stage == "B2"
+            else CheckJournal(
+                root / f"{stage}-report.json",
+                qualification_id=qid,
+                run_id=origin_id,
+                nonce=origin_nonce,
+                phase="report",
+            )
+        )
+        client = probe.ValidationReporter(
+            self.policy,
+            "fixture",
+            origin_id,
+            fence,
+            journal=admit if admit is not None else report,
+        )
+
+        def inventory(path, page=1, per_page=100, **kwargs):
+            head = path.split("/")[1]
+            values = [
+                copy.deepcopy(value)
+                for value in self.server.values()
+                if value["head_sha"] == head
+            ]
+            return {
+                "total_count": len(values),
+                "check_runs": values[(page - 1) * per_page : page * per_page],
+            }
+
+        with (
+            patch("ci.native.checks._request", side_effect=self.send),
+            patch.object(client.reader, "get", side_effect=inventory),
+        ):
+            options = {
+                "stage": stage,
+                "experiment_id": "e" * 32,
+                "writer_run_id": run_id,
+                "writer_nonce": nonce,
+                "launcher": "a" * 40,
+                "authority": "d" * 40,
+                "fixtures": self.fixtures,
+                "report_journal": report,
+                "previous": previous,
+                "save": lambda value: self.saved.append(copy.deepcopy(value)),
+            }
+            options.update(identity_overrides or {})
+            return probe.exercise(client, **options)
+
+    def test_fresh_stages_keep_history_and_use_validation_output(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+            self.assertTrue(previous["success"])
+        self.assertEqual(len(self.server), 5)
+        self.assertEqual([w[0] for w in self.writes], ["POST", "PATCH"] * 4 + ["POST"])
+        self.assertTrue(
+            all(w[1]["output"]["title"] == "Validation only" for w in self.writes)
+        )
+        self.assertTrue(
+            all(set(w[1]["output"]) == {"title", "summary"} for w in self.writes)
+        )
+        self.assertEqual(self.server[804]["status"], "in_progress")
+
+    def test_b3_completes_only_b2_and_retains_origin_identity(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        original = copy.deepcopy(self.server)
+        result = self.run_stage("B3", previous)
+        self.assertEqual(result["writer_run_id"], 505)
+        self.assertEqual(result["records"][-1]["run_id"], 504)
+        self.assertEqual(result["records"][-1]["check"]["id"], 804)
+        self.assertEqual(self.server[804]["conclusion"], "failure")
+        self.assertTrue(
+            all(self.server[key] == original[key] for key in range(800, 804))
+        )
+        self.assertEqual([w[0] for w in self.writes][-2:], ["POST", "PATCH"])
+        self.assertEqual(len(self.server), 5)
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous)
+
+    def test_b3_cannot_reopen_an_already_completed_check(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.server[804].update(
+            status="completed",
+            conclusion="failure",
+            completed_at="2026-11-01T00:00:00Z",
+        )
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous)
+        self.assertEqual(self.writes, [])
+
+    def test_b3_rejects_bad_writer_id_before_any_write(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous, identity_overrides={"writer_run_id": False})
+        self.assertEqual(self.writes, [])
+
+    def test_b3_rejects_bad_writer_nonce_before_any_write(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous, identity_overrides={"writer_nonce": "bad"})
+        self.assertEqual(self.writes, [])
+
+    def test_fence_failure_stops_before_mutation(self):
+        def fail():
+            raise ValueError("changed authority")
+
+        with self.assertRaises(CheckWriteError):
+            self.run_stage("A1", fence=fail)
+        self.assertEqual(self.writes, [])
+        self.assertFalse(self.saved[-1]["success"])
+
+    def test_changed_prior_record_stops_before_new_creation(self):
+        first = self.run_stage("A1")
+        self.server[800]["conclusion"] = "failure"
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_changed_predecessor_authority_stops_before_any_write(self):
+        first = self.run_stage("A1")
+        first["authority"] = "f" * 40
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_ambiguous_create_keeps_pending_journal_and_never_completes(self):
+        original = self.send
+
+        def uncertain(method, url, token, body=None):
+            value = original(method, url, token, body)
+            if method == "POST":
+                raise OSError("untrusted transport details")
+            return value
+
+        with (
+            patch.object(self, "send", side_effect=uncertain),
+            self.assertRaises(CheckWriteError),
+        ):
+            self.run_stage("A1")
+        self.assertEqual([entry[0] for entry in self.writes], ["POST"])
+        journal = json.loads((Path(self.temp.name) / "A1-admit.json").read_text())
+        self.assertEqual(journal["writes"][0]["status"], "pending")
+        self.assertFalse(self.saved[-1]["success"])
+        self.assertNotIn("transport details", json.dumps(self.saved))
+
+    def test_unknown_history_blocks_before_another_create(self):
+        first = self.run_stage("A1")
+        extra = copy.deepcopy(self.server[800])
+        extra.update(
+            id=900,
+            external_id="f" * 64,
+            details_url=f"https://github.com/{probe.REPOSITORY}/actions/runs/900",
+        )
+        self.server[900] = extra
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_production_reporter_output_is_unchanged(self):
+        qid = probe.stage_qid("e" * 32, "A1", 500, "b" * 40, "1" * 32)
+        journal = CheckJournal(
+            Path(self.temp.name) / "ordinary.json",
+            qualification_id=qid,
+            run_id=500,
+            nonce="1" * 32,
+            phase="admit",
+        )
+        client = CheckReporter(
+            self.policy, "fixture", 500, lambda: None, journal=journal
+        )
+        with (
+            patch("ci.native.checks._request", side_effect=self.send),
+            patch.object(
+                client.reader, "get", return_value={"total_count": 0, "check_runs": []}
+            ),
+        ):
+            client.begin("b" * 40, probe.CHECK_NAME, qid)
+        self.assertEqual(
+            self.writes[0][1]["output"]["title"], "Native qualification pending"
+        )
+
+
+class PredecessorTests(unittest.TestCase):
+    def fixture(self, stage="A1"):
+        report = report_fixture(stage)
+        origin_id = report["writer_run_id"]
+        common = {
+            "workflow_id": 700,
+            "head_sha": "a" * 40,
+            "head_branch": "main",
+            "path": probe.WORKFLOW,
+            "event": "workflow_dispatch",
+            "run_attempt": 1,
+            "repository": {"id": probe.REPOSITORY_ID, "full_name": probe.REPOSITORY},
+            "head_repository": {"id": probe.REPOSITORY_ID},
+            "actor": {"id": 10, "login": "fixture"},
+            "triggering_actor": {"id": 10},
+        }
+        current = dict(
+            common,
+            id=origin_id + 1,
+            status="in_progress",
+            conclusion=None,
+            created_at="2026-11-01T02:00:00Z",
+        )
+        previous = dict(
+            common,
+            id=origin_id,
+            status="completed",
+            conclusion="success",
+            created_at="2026-11-01T00:00:00Z",
+        )
+        job = {
+            "id": 800,
+            "name": "probe",
+            "run_id": origin_id,
+            "run_attempt": 1,
+            "head_sha": "a" * 40,
+            "status": "completed",
+            "conclusion": "success",
+            "started_at": "2026-11-01T00:00:01Z",
+            "completed_at": "2026-11-01T01:30:00Z",
+        }
+        check = report["records"][-1]
+        journals = {}
+        for phase, action in [("admit", "create"), ("report", "complete")]:
+            if stage == "B2" and phase == "report":
+                continue
+            journals[phase + "-journal.json"] = {
+                "schema_version": 1,
+                "qualification_id": check["qualification_id"],
+                "run_id": origin_id,
+                "nonce": check["nonce"],
+                "phase": phase,
+                "writes": [
+                    {
+                        "role": "native",
+                        "action": action,
+                        "expected_check_id": None
+                        if phase == "admit"
+                        else check["check"]["id"],
+                        "acknowledged_check_id": check["check"]["id"],
+                        "status": "confirmed",
+                    }
+                ],
+            }
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as archive:
+            archive.writestr("report.json", json.dumps(report))
+            for name, value in journals.items():
+                archive.writestr(name, json.dumps(value))
+        raw = buffer.getvalue()
+        artifact = {
+            "id": 900,
+            "name": f"check-enforcement-{origin_id}-1",
+            "expired": False,
+            "size_in_bytes": len(raw),
+            "created_at": "2026-11-01T01:15:00Z",
+            "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
+            "workflow_run": {
+                "id": origin_id,
+                "repository_id": probe.REPOSITORY_ID,
+                "head_repository_id": probe.REPOSITORY_ID,
+                "head_sha": "a" * 40,
+            },
+        }
+        values = {
+            f"actions/runs/{origin_id + 1}": current,
+            f"actions/runs/{origin_id}": previous,
+            f"actions/runs/{origin_id}/attempts/1/jobs": {
+                "total_count": 1,
+                "jobs": [job],
+            },
+            f"actions/runs/{origin_id}/artifacts": {
+                "total_count": 1,
+                "artifacts": [artifact],
+            },
+            "collaborators/fixture/permission": {
+                "permission": "write",
+                "user": {"id": 10},
+            },
+        }
+        return report, current, raw, values
+
+    def load(self, current, raw, values, stage="A2"):
+        api = SimpleNamespace(
+            repository=probe.REPOSITORY,
+            get=lambda path, **kwargs: copy.deepcopy(values[path]),
+        )
+        return probe.load_predecessor(
+            api,
+            stage,
+            current["id"] - 1,
+            current,
+            launcher="a" * 40,
+            authority="d" * 40,
+            fixtures=report_fixture("A1")["fixtures"],
+            experiment_id="e" * 32,
+            download=lambda artifact_id: raw,
+        )
+
+    def test_authenticates_real_zip_and_confirmed_phase_journals(self):
+        report, current, raw, values = self.fixture()
+        self.assertEqual(self.load(current, raw, values), report)
+
+    def test_b3_authenticates_b2_pending_report_without_completion_journal(self):
+        report, current, raw, values = self.fixture("B2")
+        self.assertEqual(self.load(current, raw, values, stage="B3"), report)
+
+    def test_unconfirmed_journal_is_rejected_even_with_valid_archive_hash(self):
+        _, current, raw, values = self.fixture()
+        with zipfile.ZipFile(io.BytesIO(raw)) as source:
+            files = {name: source.read(name) for name in source.namelist()}
+        journal = json.loads(files["admit-journal.json"])
+        journal["writes"][0]["status"] = "pending"
+        files["admit-journal.json"] = json.dumps(journal).encode()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as target:
+            for name, value in files.items():
+                target.writestr(name, value)
+        changed = buffer.getvalue()
+        artifact = values["actions/runs/500/artifacts"]["artifacts"][0]
+        artifact.update(
+            digest="sha256:" + hashlib.sha256(changed).hexdigest(),
+            size_in_bytes=len(changed),
+        )
+        with self.assertRaises(ValueError):
+            self.load(current, changed, values)
+
+    def test_journal_ack_must_name_the_recorded_check(self):
+        _, current, raw, values = self.fixture()
+        with zipfile.ZipFile(io.BytesIO(raw)) as source:
+            files = {name: source.read(name) for name in source.namelist()}
+        journal = json.loads(files["admit-journal.json"])
+        journal["writes"][0]["acknowledged_check_id"] = 999
+        files["admit-journal.json"] = json.dumps(journal).encode()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as target:
+            for name, value in files.items():
+                target.writestr(name, value)
+        changed = buffer.getvalue()
+        values["actions/runs/500/artifacts"]["artifacts"][0].update(
+            digest="sha256:" + hashlib.sha256(changed).hexdigest(),
+            size_in_bytes=len(changed),
+        )
+        with self.assertRaises(ValueError):
+            self.load(current, changed, values)
+
+    def test_bad_source_attempt_artifact_or_timing_refuses_predecessor(self):
+        for mutate in [
+            lambda v: v["actions/runs/500"].update(head_sha="f" * 40),
+            lambda v: v["actions/runs/500"].update(run_attempt=2),
+            lambda v: v["actions/runs/500"].update(workflow_id=999),
+            lambda v: v["actions/runs/500/artifacts"]["artifacts"][0].update(
+                digest="sha256:" + "0" * 64
+            ),
+            lambda v: v["actions/runs/500/attempts/1/jobs"]["jobs"][0].update(
+                completed_at="2026-11-01T03:00:00Z"
+            ),
+        ]:
+            _, current, raw, values = self.fixture()
+            mutate(values)
+            with self.assertRaises(ValueError):
+                self.load(current, raw, values)
+
+
+class FixtureTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.temp = tempfile.TemporaryDirectory(
+            prefix="enforcement-keys-",
+            dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None,
+        )
+        cls.root = Path(cls.temp.name)
+        cls.keys, cls.public = cls.root / "keys", cls.root / "public"
+        cls.keys.mkdir(mode=0o700)
+        cls.public.mkdir(mode=0o700)
+        cls.env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.startswith("GIT_")
+        }
+        cls.env.update(
+            GNUPGHOME=str(cls.keys),
+            GIT_CONFIG_NOSYSTEM="1",
+            GIT_CONFIG_GLOBAL=os.devnull,
+            GIT_AUTHOR_NAME="Fixture",
+            GIT_AUTHOR_EMAIL="fixture@example.invalid",
+            GIT_COMMITTER_NAME="Fixture",
+            GIT_COMMITTER_EMAIL="fixture@example.invalid",
+        )
+        cls.addClassCleanup(cls.cleanup_keys)
+        subprocess.run(
+            [
+                "gpg",
+                "--batch",
+                "--pinentry-mode",
+                "loopback",
+                "--passphrase",
+                "",
+                "--quick-generate-key",
+                "Fixture <fixture@example.invalid>",
+                "ed25519",
+                "sign",
+                "0",
+            ],
+            env=cls.env,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+        listing = subprocess.check_output(
+            ["gpg", "--with-colons", "--list-keys"], env=cls.env, stderr=subprocess.PIPE
+        ).decode()
+        cls.fingerprint = next(
+            line.split(":")[9]
+            for line in listing.splitlines()
+            if line.startswith("fpr:")
+        )
+        public = subprocess.check_output(["gpg", "--export"], env=cls.env)
+        subprocess.run(
+            ["gpg", "--batch", "--homedir", str(cls.public), "--import"],
+            input=public,
+            env=cls.env,
+            capture_output=True,
+            check=True,
+            timeout=30,
+        )
+
+    @classmethod
+    def cleanup_keys(cls):
+        for directory in [cls.keys, cls.public]:
+            subprocess.run(
+                ["gpgconf", "--homedir", str(directory), "--kill", "gpg-agent"],
+                env=cls.env,
+                capture_output=True,
+                check=False,
+                timeout=15,
+            )
+        cls.temp.cleanup()
+
+    def setUp(self):
+        self.temp_repo = tempfile.TemporaryDirectory(dir=self.root)
+        self.addCleanup(self.temp_repo.cleanup)
+        self.repo = Path(self.temp_repo.name)
+        self.git("init", "-q")
+        empty = self.git("mktree", data=b"")
+        self.base = self.git("commit-tree", empty, data=b"Base\n")
+        self.a = self.commit("A", self.base)
+        self.b = self.commit("B", self.a)
+        self.fixtures = {"base": self.base, "case_a": self.a, "case_b": self.b}
+
+    def git(self, *args, data=None):
+        return (
+            subprocess.check_output(
+                ["git", *args],
+                input=data,
+                cwd=self.repo,
+                env=self.env,
+                stderr=subprocess.PIPE,
+            )
+            .decode()
+            .strip()
+        )
+
+    def commit(self, case, parent, *, signed=True, marker=None, extra=False):
+        marker = marker or {
+            "schema_version": 1,
+            "scope": probe.SCOPE,
+            "experiment_id": "e" * 32,
+            "case": case,
+            "parent": parent,
+        }
+        blob = self.git(
+            "hash-object", "-w", "--stdin", data=json.dumps(marker).encode()
+        )
+        entries = f"100644 blob {blob}\t{probe.MARKER}\n"
+        if extra:
+            entries += f"100644 blob {blob}\textra.json\n"
+        tree = self.git("mktree", data=entries.encode())
+        args = ["commit-tree", tree, "-p", parent]
+        if signed:
+            args += ["-S" + self.fingerprint]
+        return self.git(
+            *args, data=b"Fixture\n\nSigned-off-by: Fixture <fixture@example.invalid>\n"
+        )
+
+    def verify(self, fixtures=None, **kwargs):
+        return probe.verify_fixtures(
+            self.repo,
+            fixtures or self.fixtures,
+            "e" * 32,
+            launcher=self.base,
+            authority="d" * 40,
+            keyring=self.public,
+            fingerprint=self.fingerprint,
+            signoff="Signed-off-by: Fixture <fixture@example.invalid>",
+            **kwargs,
+        )
+
+    def test_real_signed_fixture_graph_is_verified(self):
+        self.assertEqual(self.verify(), self.fixtures)
+
+    def test_unsigned_extra_files_and_wrong_marker_are_rejected(self):
+        for bad in [
+            self.commit("A", self.base, signed=False),
+            self.commit("A", self.base, extra=True),
+            self.commit("B", self.base),
+        ]:
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.verify(
+                    dict(self.fixtures, case_a=bad, case_b=self.commit("B", bad))
+                )
+
+    def test_second_fixture_must_descend_from_first(self):
+        bad = self.commit("B", self.base)
+        with self.assertRaises(ValueError):
+            self.verify(dict(self.fixtures, case_b=bad))
+
+
+class RuntimeTests(unittest.TestCase):
+    def environment(self, root):
+        return {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": probe.REPOSITORY,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "500",
+            "GITHUB_SHA": "a" * 40,
+            "GITHUB_WORKSPACE": str(Path(probe.__file__).resolve().parents[1]),
+            "RUNNER_TEMP": str(root),
+            "GH_TOKEN": "fixture",
+            "ENFORCEMENT_STAGE": "A1",
+            "ENFORCEMENT_EXPERIMENT_ID": "e" * 32,
+            "ENFORCEMENT_AUTHORITY_SHA": "d" * 40,
+            "ENFORCEMENT_PREDECESSOR_RUN": "",
+            "NATIVE_GATE_PRIVATE_KEY": "never-read",
+        }
+
+    def test_untrusted_runtime_rejected_before_api_or_token_use(self):
+        for field, value in [
+            ("GITHUB_REF", "refs/heads/test"),
+            ("GITHUB_REPOSITORY", "other/repo"),
+            ("GITHUB_EVENT_NAME", "push"),
+            ("GITHUB_RUN_ATTEMPT", "2"),
+            ("ENFORCEMENT_STAGE", "other"),
+        ]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as root:
+                env = self.environment(root)
+                env[field] = value
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(probe, "ProofAPI") as api,
+                    patch.object(probe.ValidationReporter, "from_key") as token,
+                ):
+                    with self.assertRaises(ValueError):
+                        probe.run_worker()
+                    api.assert_not_called()
+                    token.assert_not_called()
+
+    def test_changed_refs_stop_before_key_loading_or_token_mint(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            refs = {
+                "refs/heads/main": "f" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["a" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run"),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys") as keys,
+                patch.object(probe.ValidationReporter, "from_key") as token,
+            ):
+                with self.assertRaises(ValueError):
+                    probe.run_worker()
+                keys.assert_not_called()
+                token.assert_not_called()
+
+    def test_failure_output_never_echoes_exception_details(self):
+        output = io.StringIO()
+        with (
+            patch.object(
+                probe, "run_worker", side_effect=ValueError("secret sentinel")
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(probe.main(), 1)
+        self.assertNotIn("sentinel", output.getvalue())
+        self.assertFalse(json.loads(output.getvalue())["success"])
+
+    def test_predecessor_failure_occurs_before_token_mint(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            env.update(ENFORCEMENT_STAGE="A2", ENFORCEMENT_PREDECESSOR_RUN="499")
+            refs = {
+                "refs/heads/main": "a" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["a" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run", return_value={"id": 500}),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys", return_value=Path(root)),
+                patch.object(probe, "public_git"),
+                patch.object(probe, "verify_fixtures") as fixtures,
+                patch.object(
+                    probe, "load_predecessor", side_effect=ValueError("bad evidence")
+                ),
+                patch.object(probe.ValidationReporter, "from_key") as token,
+            ):
+                with self.assertRaises(ValueError):
+                    probe.run_worker()
+                fixtures.assert_called_once()
+                token.assert_not_called()
+
+    def test_workflow_is_manual_main_only_readonly_and_bounded(self):
+        root = Path(probe.__file__).resolve().parents[1]
+        text = (root / probe.WORKFLOW).read_text()
+        self.assertIn("workflow_dispatch:", text)
+        self.assertNotIn("  push:", text)
+        self.assertIn("github.ref == 'refs/heads/main'", text)
+        self.assertIn("timeout-minutes: 8", text)
+        self.assertIn("environment: native-gate-reporter", text)
+        self.assertNotIn(": write", text)
+        self.assertEqual(text.count("secrets.NATIVE_GATE_PRIVATE_KEY"), 1)
+        self.assertNotIn("tools.trusted_native", text)
+
+    def test_runtime_uses_b2_identity_for_b3_reporter_not_writer(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            env.update(
+                GITHUB_RUN_ID="505",
+                ENFORCEMENT_STAGE="B3",
+                ENFORCEMENT_PREDECESSOR_RUN="504",
+            )
+            previous = report_fixture("B2")
+            refs = {
+                "refs/heads/main": "a" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["b" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run", return_value={"id": 505}),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys", return_value=Path(root)),
+                patch.object(probe, "public_git"),
+                patch.object(probe, "verify_fixtures"),
+                patch.object(probe, "load_predecessor", return_value=previous),
+                patch.object(
+                    probe.uuid, "uuid4", return_value=SimpleNamespace(hex="6" * 32)
+                ),
+                patch.object(probe.ValidationReporter, "from_key") as token,
+                patch.object(
+                    probe, "exercise", return_value=report_fixture("B3")
+                ) as execute,
+            ):
+                probe.run_worker()
+                self.assertEqual(token.call_args.args[2], 504)
+                self.assertEqual(execute.call_args.kwargs["writer_run_id"], 505)
+                journal = json.loads(
+                    (
+                        Path(root) / "check-enforcement-probe/report-journal.json"
+                    ).read_text()
+                )
+                self.assertEqual((journal["run_id"], journal["nonce"]), (504, "5" * 32))
+
+
+if __name__ == "__main__":
+    unittest.main()
