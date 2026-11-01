@@ -25,15 +25,19 @@ passed. This is local contract validation, not live enforcement evidence.
 
 ## EP-02: Fresh-check stages and validation-only output
 
-- [ ] Implement A1/A2/A3/B1/B2 with real `CheckReporter` and `CheckJournal` behavior;
+- [x] Implement A1/A2/A3/B1/B2 with real `CheckReporter` and `CheckJournal` behavior;
   new IDs per creation and exact known IDs for same-stage completion.
-- [ ] Add the probe-local output adapter without changing production defaults,
+- [x] Add the probe-local output adapter without changing production defaults,
   identity fields, allowed endpoints or journal/fence ordering.
-- [ ] Prove pre-write fences, confirmed acknowledgments, preserved earlier checks
+- [x] Prove pre-write fences, confirmed acknowledgments, preserved earlier checks
   and no retry after transport/persistence failure using fake transport boundaries.
 
 Verification: focused tests and real request-body assertions; production
 `test_checks.py` suite; Ruff/whitespace. Dependencies: EP-01. Same two files. Size: M.
+
+EP-02: 15 focused tests, 21 original-client tests and 584 total tests passed.
+Real client/journal paths used fake transport; pending and uncertain-write
+results are not live GitHub evidence. Production display defaults stayed intact.
 
 ## EP-03: Authenticated B3 pending-check completion
 

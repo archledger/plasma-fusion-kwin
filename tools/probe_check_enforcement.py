@@ -2,12 +2,15 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Strict disposable enforcement-probe data, never native qualification."""
 
+import copy
 import hashlib
 import json
 import re
 
 from ci.native.check_records import CheckIdentity, validate_check
+from ci.native.checks import CheckReporter
 from ci.native.merge_update import git, read_raw_object
+from ci.native.pagination import get_all
 from ci.native.proof_api import (
     bounded_integer,
     finite_float,
@@ -156,6 +159,7 @@ def validate_report(value):
     keys(
         value,
         [
+            "success",
             "schema_version",
             "scope",
             "experiment_id",
@@ -169,7 +173,8 @@ def validate_report(value):
         ],
     )
     require(
-        type(value["schema_version"]) is int
+        value["success"] is True
+        and type(value["schema_version"]) is int
         and value["schema_version"] == 1
         and value["scope"] == SCOPE,
         "wrong enforcement report scope",
@@ -224,3 +229,170 @@ def validate_report(value):
             "writer differs from the new check origin",
         )
     return value
+
+
+class ValidationReporter(CheckReporter):
+    """Change display text only; parent transport, identity and journal stay intact."""
+
+    def _send(self, method, resource, body=None):
+        if method in {"POST", "PATCH"}:
+            body = dict(body, output={"title": "Validation only", "summary": SCOPE})
+        return super()._send(method, resource, body)
+
+
+def snapshot(check):
+    return {
+        key: {"id": check["app"]["id"]} if key == "app" else check[key]
+        for key in CHECK_FIELDS
+    }
+
+
+def previous_records(
+    previous,
+    *,
+    stage,
+    experiment_id,
+    launcher,
+    authority,
+    fixtures,
+    writer_run_id,
+    writer_nonce,
+):
+    require(type(stage) is str and stage in STAGES, "invalid stage")
+    if stage == "A1":
+        require(previous is None, "first stage cannot adopt history")
+        return []
+    require(previous is not None, "missing preceding stage")
+    validate_report(previous)
+    require(
+        previous["stage"] == STAGES[STAGES.index(stage) - 1]
+        and previous["experiment_id"] == experiment_id
+        and previous["launcher"] == launcher
+        and previous["authority"] == authority
+        and previous["fixtures"] == fixtures,
+        "previous stage context differs",
+    )
+    require(
+        writer_run_id != previous["writer_run_id"]
+        and writer_nonce != previous["writer_nonce"]
+        and all(
+            writer_run_id != r["run_id"] and writer_nonce != r["nonce"]
+            for r in previous["records"]
+        ),
+        "stage invocation reused",
+    )
+    return copy.deepcopy(previous["records"])
+
+
+def observe_history(client, records):
+    for record in records:
+        actual = client._send("GET", f"check-runs/{record['check']['id']}")
+        require(snapshot(actual) == record["check"], "earlier check changed")
+
+
+def observe_inventory(client, head, records):
+    values = get_all(
+        client.reader,
+        f"commits/{head}/check-runs",
+        key="check_runs",
+        check_filter="all",
+    )
+    matching = [
+        snapshot(value)
+        for value in values
+        if value["app"]["id"] == APP_ID and value["name"] == CHECK_NAME
+    ]
+    expected = [r["check"] for r in records if r["check"]["head_sha"] == head]
+    require(
+        sorted(matching, key=lambda item: item["id"])
+        == sorted(expected, key=lambda item: item["id"]),
+        "visible check history differs",
+    )
+
+
+def exercise(
+    client,
+    *,
+    stage,
+    experiment_id,
+    writer_run_id,
+    writer_nonce,
+    launcher,
+    authority,
+    fixtures,
+    report_journal,
+    previous=None,
+    save,
+):
+    """One creation stage using real client guards; all external I/O is caller-scoped."""
+    require(stage in CREATION_STAGES, "unsupported creation stage")
+    validate_fixtures(fixtures, launcher, authority)
+    records = previous_records(
+        previous,
+        stage=stage,
+        experiment_id=experiment_id,
+        launcher=launcher,
+        authority=authority,
+        fixtures=fixtures,
+        writer_run_id=writer_run_id,
+        writer_nonce=writer_nonce,
+    )
+    head = stage_head(stage, fixtures)
+    qid = stage_qid(experiment_id, stage, writer_run_id, head, writer_nonce)
+    require(
+        type(client) is ValidationReporter and client.run_id == writer_run_id,
+        "wrong check writer",
+    )
+    value = {
+        "success": False,
+        "schema_version": 1,
+        "scope": SCOPE,
+        "experiment_id": experiment_id,
+        "stage": stage,
+        "launcher": launcher,
+        "authority": authority,
+        "writer_run_id": writer_run_id,
+        "writer_nonce": writer_nonce,
+        "fixtures": fixtures,
+        "records": records,
+    }
+    try:
+        observe_history(client, records)
+        observe_inventory(client, head, records)
+        check_id = client.begin(head, CHECK_NAME, qid)
+        pending = client._send("GET", f"check-runs/{check_id}")
+        require(
+            pending["output"] == {"title": "Validation only", "summary": SCOPE},
+            "probe output is not validation-only",
+        )
+        record = {
+            "stage": stage,
+            "run_id": writer_run_id,
+            "nonce": writer_nonce,
+            "qualification_id": qid,
+            "check": snapshot(pending),
+        }
+        records.append(record)
+        save(copy.deepcopy(value))
+        outcome = stage_outcome(stage)
+        if outcome is not None:
+            client.journal = report_journal
+            client.complete(
+                check_id, head, CHECK_NAME, qid, success=outcome == "success"
+            )
+            completed = client._send("GET", f"check-runs/{check_id}")
+            require(
+                completed["output"] == {"title": "Validation only", "summary": SCOPE},
+                "probe output is not validation-only",
+            )
+            record["check"] = snapshot(completed)
+        observe_history(client, records)
+        observe_inventory(client, head, records)
+        value["success"] = True
+        validate_report(value)
+        save(copy.deepcopy(value))
+        return value
+    except (ValueError, KeyError, TypeError, OSError):
+        value["success"] = False
+        save(copy.deepcopy(value))
+        raise

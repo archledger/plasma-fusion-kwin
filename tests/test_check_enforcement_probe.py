@@ -9,7 +9,11 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
+from ci.native.check_journal import CheckJournal
+from ci.native.checks import CheckReporter, CheckWriteError
 from tools import probe_check_enforcement as probe
 
 
@@ -47,6 +51,7 @@ def report_fixture(stage):
         )
     index = probe.STAGES.index(stage)
     return {
+        "success": True,
         "schema_version": 1,
         "scope": probe.SCOPE,
         "experiment_id": "e" * 32,
@@ -121,6 +126,184 @@ class ContractTests(unittest.TestCase):
         )
         with self.assertRaises(ValueError):
             probe.validate_report(pending)
+
+
+class StageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(dir="/tmp/opencode")
+        self.addCleanup(self.temp.cleanup)
+        self.server, self.writes, self.saved = {}, [], []
+        self.fixtures = report_fixture("A1")["fixtures"]
+        self.policy = SimpleNamespace(
+            repository=probe.REPOSITORY,
+            repository_id=probe.REPOSITORY_ID,
+            app_id=probe.APP_ID,
+            check_name=probe.CHECK_NAME,
+        )
+
+    def send(self, method, url, token, body=None):
+        resource = url.split("/repos/" + probe.REPOSITORY + "/")[1]
+        if method == "POST":
+            check_id = 800 + len(self.server)
+            self.server[check_id] = dict(
+                body,
+                id=check_id,
+                app={"id": probe.APP_ID},
+                conclusion=None,
+                completed_at=None,
+            )
+        else:
+            check_id = int(resource.split("/")[-1])
+            if method == "PATCH":
+                self.server[check_id].update(body, completed_at="2026-11-01T00:00:00Z")
+        if method != "GET":
+            self.writes.append((method, copy.deepcopy(body)))
+        return copy.deepcopy(self.server[check_id])
+
+    def run_stage(self, stage, previous=None, fence=lambda: None):
+        index = probe.STAGES.index(stage)
+        run_id, nonce = 500 + index, str(index + 1) * 32
+        qid = probe.stage_qid(
+            "e" * 32, stage, run_id, probe.stage_head(stage, self.fixtures), nonce
+        )
+        root = Path(self.temp.name)
+        admit = CheckJournal(
+            root / f"{stage}-admit.json",
+            qualification_id=qid,
+            run_id=run_id,
+            nonce=nonce,
+            phase="admit",
+        )
+        report = (
+            None
+            if stage == "B2"
+            else CheckJournal(
+                root / f"{stage}-report.json",
+                qualification_id=qid,
+                run_id=run_id,
+                nonce=nonce,
+                phase="report",
+            )
+        )
+        client = probe.ValidationReporter(
+            self.policy, "fixture", run_id, fence, journal=admit
+        )
+
+        def inventory(path, page=1, per_page=100, **kwargs):
+            head = path.split("/")[1]
+            values = [
+                copy.deepcopy(value)
+                for value in self.server.values()
+                if value["head_sha"] == head
+            ]
+            return {
+                "total_count": len(values),
+                "check_runs": values[(page - 1) * per_page : page * per_page],
+            }
+
+        with (
+            patch("ci.native.checks._request", side_effect=self.send),
+            patch.object(client.reader, "get", side_effect=inventory),
+        ):
+            return probe.exercise(
+                client,
+                stage=stage,
+                experiment_id="e" * 32,
+                writer_run_id=run_id,
+                writer_nonce=nonce,
+                launcher="a" * 40,
+                authority="d" * 40,
+                fixtures=self.fixtures,
+                report_journal=report,
+                previous=previous,
+                save=lambda value: self.saved.append(copy.deepcopy(value)),
+            )
+
+    def test_fresh_stages_keep_history_and_use_validation_output(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+            self.assertTrue(previous["success"])
+        self.assertEqual(len(self.server), 5)
+        self.assertEqual([w[0] for w in self.writes], ["POST", "PATCH"] * 4 + ["POST"])
+        self.assertTrue(
+            all(w[1]["output"]["title"] == "Validation only" for w in self.writes)
+        )
+        self.assertEqual(self.server[804]["status"], "in_progress")
+
+    def test_fence_failure_stops_before_mutation(self):
+        def fail():
+            raise ValueError("changed authority")
+
+        with self.assertRaises(CheckWriteError):
+            self.run_stage("A1", fence=fail)
+        self.assertEqual(self.writes, [])
+        self.assertFalse(self.saved[-1]["success"])
+
+    def test_changed_prior_record_stops_before_new_creation(self):
+        first = self.run_stage("A1")
+        self.server[800]["conclusion"] = "failure"
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_ambiguous_create_keeps_pending_journal_and_never_completes(self):
+        original = self.send
+
+        def uncertain(method, url, token, body=None):
+            value = original(method, url, token, body)
+            if method == "POST":
+                raise OSError("untrusted transport details")
+            return value
+
+        with (
+            patch.object(self, "send", side_effect=uncertain),
+            self.assertRaises(CheckWriteError),
+        ):
+            self.run_stage("A1")
+        self.assertEqual([entry[0] for entry in self.writes], ["POST"])
+        journal = json.loads((Path(self.temp.name) / "A1-admit.json").read_text())
+        self.assertEqual(journal["writes"][0]["status"], "pending")
+        self.assertFalse(self.saved[-1]["success"])
+        self.assertNotIn("transport details", json.dumps(self.saved))
+
+    def test_unknown_history_blocks_before_another_create(self):
+        first = self.run_stage("A1")
+        extra = copy.deepcopy(self.server[800])
+        extra.update(
+            id=900,
+            external_id="f" * 64,
+            details_url=f"https://github.com/{probe.REPOSITORY}/actions/runs/900",
+        )
+        self.server[900] = extra
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("A2", first)
+        self.assertEqual(self.writes, [])
+
+    def test_production_reporter_output_is_unchanged(self):
+        qid = probe.stage_qid("e" * 32, "A1", 500, "b" * 40, "1" * 32)
+        journal = CheckJournal(
+            Path(self.temp.name) / "ordinary.json",
+            qualification_id=qid,
+            run_id=500,
+            nonce="1" * 32,
+            phase="admit",
+        )
+        client = CheckReporter(
+            self.policy, "fixture", 500, lambda: None, journal=journal
+        )
+        with (
+            patch("ci.native.checks._request", side_effect=self.send),
+            patch.object(
+                client.reader, "get", return_value={"total_count": 0, "check_runs": []}
+            ),
+        ):
+            client.begin("b" * 40, probe.CHECK_NAME, qid)
+        self.assertEqual(
+            self.writes[0][1]["output"]["title"], "Native qualification pending"
+        )
 
 
 class FixtureTests(unittest.TestCase):
