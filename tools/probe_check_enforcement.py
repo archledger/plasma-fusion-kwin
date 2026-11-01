@@ -10,6 +10,7 @@ import re
 import subprocess
 import uuid
 import zipfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from urllib.request import build_opener
@@ -63,6 +64,30 @@ CHECK_FIELDS = (
 )
 
 
+def _now():
+    return datetime.now(timezone.utc)
+
+
+def expiry_time(value):
+    require(
+        type(value) is str
+        and re.fullmatch(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z", value),
+        "invalid enforcement expiry",
+    )
+    return timestamp(value)
+
+
+def require_unexpired(value, *, created_at=None):
+    expiry = expiry_time(value)
+    if created_at is not None:
+        require(
+            timedelta(0) < expiry - timestamp(created_at) <= timedelta(hours=1),
+            "enforcement expiry exceeds the one-hour run window",
+        )
+    require(_now() < expiry, "enforcement deadline expired")
+    return expiry
+
+
 def experiment_refs(experiment_id):
     digest(experiment_id, 32)
     prefix = "refs/heads/validation/check-enforcement-" + experiment_id
@@ -76,8 +101,9 @@ def experiment_refs(experiment_id):
     }
 
 
-def stage_qid(experiment_id, stage, run_id, head, nonce):
+def stage_qid(experiment_id, stage, run_id, head, nonce, expires_at):
     experiment_refs(experiment_id)
+    expiry_time(expires_at)
     require(type(stage) is str and stage in CREATION_STAGES, "invalid origin stage")
     return hashlib.sha256(
         canonical_json(
@@ -88,6 +114,7 @@ def stage_qid(experiment_id, stage, run_id, head, nonce):
                 "run_id": identifier(run_id),
                 "head": digest(head),
                 "nonce": digest(nonce, 32),
+                "expires_at": expires_at,
             }
         )
     ).hexdigest()
@@ -190,6 +217,7 @@ def validate_report(value):
             "authority",
             "writer_run_id",
             "writer_nonce",
+            "expires_at",
             "fixtures",
             "records",
         ],
@@ -197,7 +225,7 @@ def validate_report(value):
     require(
         value["success"] is True
         and type(value["schema_version"]) is int
-        and value["schema_version"] == 1
+        and value["schema_version"] == 2
         and value["scope"] == SCOPE,
         "wrong enforcement report scope",
     )
@@ -209,6 +237,7 @@ def validate_report(value):
     )
     writer = identifier(value["writer_run_id"])
     digest(value["writer_nonce"], 32)
+    expiry_time(value["expires_at"])
     records = value["records"]
     count = min(STAGES.index(stage) + 1, len(CREATION_STAGES))
     require(type(records) is list and len(records) == count, "incomplete stage history")
@@ -219,7 +248,9 @@ def validate_report(value):
         run_id = identifier(record["run_id"])
         nonce = digest(record["nonce"], 32)
         head = stage_head(origin, fixtures)
-        qid = stage_qid(value["experiment_id"], origin, run_id, head, nonce)
+        qid = stage_qid(
+            value["experiment_id"], origin, run_id, head, nonce, value["expires_at"]
+        )
         require(record["qualification_id"] == qid, "check identity differs")
         check = record["check"]
         keys(check, CHECK_FIELDS)
@@ -322,6 +353,7 @@ def load_predecessor(
     authority,
     fixtures,
     experiment_id,
+    expires_at,
     download,
 ):
     """Authenticate a bounded prior report and its acknowledged writes."""
@@ -390,6 +422,7 @@ def load_predecessor(
         and report["experiment_id"] == experiment_id,
         "preceding report context differs",
     )
+    require(report["expires_at"] == expires_at, "preceding expiry differs")
     record = report["records"][-1]
     verify_phase_journal(files["admit-journal.json"], record, "admit")
     if previous_stage != "B2":
@@ -403,6 +436,7 @@ class ValidationReporter(CheckReporter):
     def _send(self, method, resource, body=None):
         if method in {"POST", "PATCH"}:
             body = dict(body, output={"title": "Validation only", "summary": SCOPE})
+            require_unexpired(self.policy.expires_at)
         return super()._send(method, resource, body)
 
 
@@ -433,6 +467,7 @@ def previous_records(
     fixtures,
     writer_run_id,
     writer_nonce,
+    expires_at,
 ):
     require(type(stage) is str and stage in STAGES, "invalid stage")
     if stage == "A1":
@@ -448,6 +483,7 @@ def previous_records(
         and previous["fixtures"] == fixtures,
         "previous stage context differs",
     )
+    require(previous["expires_at"] == expires_at, "previous stage expiry differs")
     require(
         writer_run_id != previous["writer_run_id"]
         and writer_nonce != previous["writer_nonce"]
@@ -496,6 +532,7 @@ def exercise(
     launcher,
     authority,
     fixtures,
+    expires_at,
     report_journal,
     previous=None,
     save,
@@ -503,6 +540,11 @@ def exercise(
     """One stage using real client guards; all external I/O is caller-scoped."""
     identifier(writer_run_id)
     digest(writer_nonce, 32)
+    expiry_time(expires_at)
+    require(
+        getattr(client.policy, "expires_at", None) == expires_at,
+        "writer expiry differs",
+    )
     validate_fixtures(fixtures, launcher, authority)
     records = previous_records(
         previous,
@@ -513,6 +555,7 @@ def exercise(
         fixtures=fixtures,
         writer_run_id=writer_run_id,
         writer_nonce=writer_nonce,
+        expires_at=expires_at,
     )
     head = stage_head(stage, fixtures)
     origin = records[-1] if stage == "B3" else None
@@ -520,7 +563,9 @@ def exercise(
     qid = (
         origin["qualification_id"]
         if origin
-        else stage_qid(experiment_id, stage, writer_run_id, head, writer_nonce)
+        else stage_qid(
+            experiment_id, stage, writer_run_id, head, writer_nonce, expires_at
+        )
     )
     require(
         type(client) is ValidationReporter and client.run_id == origin_run,
@@ -528,7 +573,7 @@ def exercise(
     )
     value = {
         "success": False,
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": SCOPE,
         "experiment_id": experiment_id,
         "stage": stage,
@@ -536,6 +581,7 @@ def exercise(
         "authority": authority,
         "writer_run_id": writer_run_id,
         "writer_nonce": writer_nonce,
+        "expires_at": expires_at,
         "fixtures": fixtures,
         "records": records,
     }
@@ -658,6 +704,8 @@ def run_worker():
         and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
         "not a trusted probe invocation",
     )
+    expires_at = os.environ["ENFORCEMENT_EXPIRES_AT"]
+    require_unexpired(expires_at)
     stage = os.environ["ENFORCEMENT_STAGE"]
     require(stage in STAGES, "invalid enforcement stage")
     experiment = os.environ["ENFORCEMENT_EXPERIMENT_ID"]
@@ -685,6 +733,7 @@ def run_worker():
     work.mkdir(mode=0o700)
     api = ProofAPI(REPOSITORY, token=os.environ["GH_TOKEN"], max_calls=64)
     current = verify_probe_run(api, run_id, launcher, completed=False)
+    require_unexpired(expires_at, created_at=current["created_at"])
     refs = read_refs(work, experiment)
     fixtures = {
         "base": launcher,
@@ -731,6 +780,7 @@ def run_worker():
         authority=authority,
         fixtures=fixtures,
         experiment_id=experiment,
+        expires_at=expires_at,
         download=download_artifact,
     )
     writer_nonce = uuid.uuid4().hex
@@ -744,6 +794,7 @@ def run_worker():
         fixtures=fixtures,
         writer_run_id=run_id,
         writer_nonce=writer_nonce,
+        expires_at=expires_at,
     )
     origin = records[-1] if stage == "B3" else None
     origin_id = origin["run_id"] if origin else run_id
@@ -752,7 +803,12 @@ def run_worker():
         origin["qualification_id"]
         if origin
         else stage_qid(
-            experiment, stage, run_id, stage_head(stage, fixtures), writer_nonce
+            experiment,
+            stage,
+            run_id,
+            stage_head(stage, fixtures),
+            writer_nonce,
+            expires_at,
         )
     )
     journals = {}
@@ -768,10 +824,12 @@ def run_worker():
         )
 
     def fence():
+        require_unexpired(expires_at)
         verify_probe_run(api, run_id, launcher, completed=False)
         require(
             read_refs(work, experiment) == expected_refs, "enforcement fence changed"
         )
+        require_unexpired(expires_at)
 
     fence()
     policy = SimpleNamespace(
@@ -779,6 +837,7 @@ def run_worker():
         repository_id=REPOSITORY_ID,
         app_id=APP_ID,
         check_name=CHECK_NAME,
+        expires_at=expires_at,
     )
     client = ValidationReporter.from_key(
         policy,
@@ -800,6 +859,7 @@ def run_worker():
         launcher=launcher,
         authority=authority,
         fixtures=fixtures,
+        expires_at=expires_at,
         report_journal=journals.get("report"),
         previous=previous,
         save=save,

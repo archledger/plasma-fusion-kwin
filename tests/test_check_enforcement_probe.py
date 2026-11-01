@@ -20,15 +20,17 @@ from ci.native.check_journal import CheckJournal
 from ci.native.checks import CheckReporter, CheckWriteError
 from tools import probe_check_enforcement as probe
 
+EXPIRES = "2026-11-01T01:00:00Z"
 
-def report_fixture(stage):
+
+def report_fixture(stage, expires_at=EXPIRES):
     fixtures = {"base": "a" * 40, "case_a": "b" * 40, "case_b": "c" * 40}
     count = min(probe.STAGES.index(stage) + 1, 5)
     records = []
     for index, origin in enumerate(probe.STAGES[:count]):
         run_id, nonce = 500 + index, str(index + 1) * 32
         head = fixtures["case_a" if origin.startswith("A") else "case_b"]
-        qid = probe.stage_qid("e" * 32, origin, run_id, head, nonce)
+        qid = probe.stage_qid("e" * 32, origin, run_id, head, nonce, expires_at)
         outcome = (
             None
             if origin == "B2" and stage != "B3"
@@ -56,7 +58,7 @@ def report_fixture(stage):
     index = probe.STAGES.index(stage)
     return {
         "success": True,
-        "schema_version": 1,
+        "schema_version": 2,
         "scope": probe.SCOPE,
         "experiment_id": "e" * 32,
         "stage": stage,
@@ -64,6 +66,7 @@ def report_fixture(stage):
         "authority": "d" * 40,
         "writer_run_id": 500 + index,
         "writer_nonce": str(index + 1) * 32,
+        "expires_at": expires_at,
         "fixtures": fixtures,
         "records": records,
     }
@@ -136,6 +139,11 @@ class ContractTests(unittest.TestCase):
 
 class StageTests(unittest.TestCase):
     def setUp(self):
+        self.enterContext(
+            patch.object(
+                probe, "_now", return_value=probe.timestamp("2026-11-01T00:31:00Z")
+            )
+        )
         self.temp = tempfile.TemporaryDirectory(
             dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None
         )
@@ -147,6 +155,7 @@ class StageTests(unittest.TestCase):
             repository_id=probe.REPOSITORY_ID,
             app_id=probe.APP_ID,
             check_name=probe.CHECK_NAME,
+            expires_at=EXPIRES,
         )
 
     def send(self, method, url, token, body=None):
@@ -195,7 +204,12 @@ class StageTests(unittest.TestCase):
             )
         else:
             qid = probe.stage_qid(
-                "e" * 32, stage, run_id, probe.stage_head(stage, self.fixtures), nonce
+                "e" * 32,
+                stage,
+                run_id,
+                probe.stage_head(stage, self.fixtures),
+                nonce,
+                EXPIRES,
             )
         root = Path(self.temp.name)
         admit = (
@@ -252,6 +266,7 @@ class StageTests(unittest.TestCase):
                 "launcher": "a" * 40,
                 "authority": "d" * 40,
                 "fixtures": self.fixtures,
+                "expires_at": EXPIRES,
                 "report_journal": report,
                 "previous": previous,
                 "save": lambda value: self.saved.append(copy.deepcopy(value)),
@@ -384,7 +399,7 @@ class StageTests(unittest.TestCase):
         self.assertEqual(self.writes, [])
 
     def test_production_reporter_output_is_unchanged(self):
-        qid = probe.stage_qid("e" * 32, "A1", 500, "b" * 40, "1" * 32)
+        qid = probe.stage_qid("e" * 32, "A1", 500, "b" * 40, "1" * 32, EXPIRES)
         journal = CheckJournal(
             Path(self.temp.name) / "ordinary.json",
             qualification_id=qid,
@@ -408,8 +423,8 @@ class StageTests(unittest.TestCase):
 
 
 class PredecessorTests(unittest.TestCase):
-    def fixture(self, stage="A1"):
-        report = report_fixture(stage)
+    def fixture(self, stage="A1", expires_at=EXPIRES):
+        report = report_fixture(stage, expires_at)
         origin_id = report["writer_run_id"]
         common = {
             "workflow_id": 700,
@@ -428,7 +443,7 @@ class PredecessorTests(unittest.TestCase):
             id=origin_id + 1,
             status="in_progress",
             conclusion=None,
-            created_at="2026-11-01T02:00:00Z",
+            created_at="2026-11-01T00:30:00Z",
         )
         previous = dict(
             common,
@@ -446,7 +461,7 @@ class PredecessorTests(unittest.TestCase):
             "status": "completed",
             "conclusion": "success",
             "started_at": "2026-11-01T00:00:01Z",
-            "completed_at": "2026-11-01T01:30:00Z",
+            "completed_at": "2026-11-01T00:10:00Z",
         }
         check = report["records"][-1]
         journals = {}
@@ -482,7 +497,7 @@ class PredecessorTests(unittest.TestCase):
             "name": f"check-enforcement-{origin_id}-1",
             "expired": False,
             "size_in_bytes": len(raw),
-            "created_at": "2026-11-01T01:15:00Z",
+            "created_at": "2026-11-01T00:05:00Z",
             "digest": "sha256:" + hashlib.sha256(raw).hexdigest(),
             "workflow_run": {
                 "id": origin_id,
@@ -523,6 +538,7 @@ class PredecessorTests(unittest.TestCase):
             authority="d" * 40,
             fixtures=report_fixture("A1")["fixtures"],
             experiment_id="e" * 32,
+            expires_at=EXPIRES,
             download=lambda artifact_id: raw,
         )
 
@@ -746,6 +762,13 @@ class FixtureTests(unittest.TestCase):
 
 
 class RuntimeTests(unittest.TestCase):
+    def setUp(self):
+        self.enterContext(
+            patch.object(
+                probe, "_now", return_value=probe.timestamp("2026-11-01T00:31:00Z")
+            )
+        )
+
     def environment(self, root):
         return {
             "GITHUB_ACTIONS": "true",
@@ -762,6 +785,7 @@ class RuntimeTests(unittest.TestCase):
             "ENFORCEMENT_EXPERIMENT_ID": "e" * 32,
             "ENFORCEMENT_AUTHORITY_SHA": "d" * 40,
             "ENFORCEMENT_PREDECESSOR_RUN": "",
+            "ENFORCEMENT_EXPIRES_AT": EXPIRES,
             "NATIVE_GATE_PRIVATE_KEY": "never-read",
         }
 
@@ -804,14 +828,21 @@ class RuntimeTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch.object(probe, "ProofAPI"),
-                patch.object(probe, "verify_probe_run"),
+                patch.object(
+                    probe,
+                    "verify_probe_run",
+                    return_value={"id": 500, "created_at": "2026-11-01T00:00:00Z"},
+                ),
                 patch.object(probe, "git", side_effect=["a" * 40, ""]),
-                patch.object(probe, "read_refs", return_value=refs),
-                patch.object(probe, "load_keys") as keys,
+                patch.object(probe, "read_refs", return_value=refs) as observed_refs,
+                patch.object(
+                    probe, "load_keys", side_effect=ValueError("unexpected key loading")
+                ) as keys,
                 patch.object(probe.ValidationReporter, "from_key") as token,
             ):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, "enforcement refs changed"):
                     probe.run_worker()
+                observed_refs.assert_called_once()
                 keys.assert_not_called()
                 token.assert_not_called()
 
@@ -846,7 +877,11 @@ class RuntimeTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch.object(probe, "ProofAPI"),
-                patch.object(probe, "verify_probe_run", return_value={"id": 500}),
+                patch.object(
+                    probe,
+                    "verify_probe_run",
+                    return_value={"id": 500, "created_at": "2026-11-01T00:00:00Z"},
+                ),
                 patch.object(probe, "git", side_effect=["a" * 40, ""]),
                 patch.object(probe, "read_refs", return_value=refs),
                 patch.object(probe, "load_keys", return_value=Path(root)),
@@ -898,7 +933,11 @@ class RuntimeTests(unittest.TestCase):
             with (
                 patch.dict(os.environ, env, clear=True),
                 patch.object(probe, "ProofAPI"),
-                patch.object(probe, "verify_probe_run", return_value={"id": 505}),
+                patch.object(
+                    probe,
+                    "verify_probe_run",
+                    return_value={"id": 505, "created_at": "2026-11-01T00:00:00Z"},
+                ),
                 patch.object(probe, "git", side_effect=["a" * 40, ""]),
                 patch.object(probe, "read_refs", return_value=refs),
                 patch.object(probe, "load_keys", return_value=Path(root)),

@@ -101,6 +101,9 @@ def runtime(stage):
         harness = RuntimeHarness(root, stage)
         replacements = [
             patch.dict(probe.os.environ, harness.env, clear=True),
+            patch.object(
+                probe, "_now", return_value=probe.timestamp("2026-11-01T00:31:00Z")
+            ),
             patch.object(probe, "ProofAPI", return_value=harness.api),
             patch.object(probe, "git", side_effect=["a" * 40, ""]),
             patch.object(
