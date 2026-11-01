@@ -39,8 +39,9 @@ this plan does not authorize parallel implementation or extra live runs.
 
 ## Implementation decisions
 
-1. **Keep logic in the new probe.** Use the four source/test/docs paths listed
-   in the specification. No change to production coordination, evidence schema,
+1. **Keep logic in the new probe.** Use the source/test/docs paths listed in
+   the specification, with direct runtime-boundary tests in a separate file.
+   No change to production coordination, evidence schema,
    native workflow or `push_exact_merge`.
 2. **Reuse real guards.** Use the existing check writer, journal, signature,
    strict-JSON and bounded API/artifact helpers. Network transport is replaced
@@ -82,7 +83,7 @@ compilation and targeted fence mutations. Checkpoint B adds pinned workflow and
 license checks, public-source patch application and independent source review.
 
 ```sh
-python3 -B -m unittest discover -s tests -p 'test_check_enforcement_probe.py' -v
+python3 -B -m unittest discover -s tests -p 'test_check_enforcement*.py' -v
 python3 -B -m unittest discover -s tests -v
 python3 tools/patchset.py validate
 ruff check --no-cache ci tools tests

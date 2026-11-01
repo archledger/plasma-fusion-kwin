@@ -2,8 +2,9 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Check-enforcement-probe tasks
 
-Status: owner approved EP-01–EP-06 source implementation on 2026-11-01.
-All implementation boxes start unchecked; EP-07–EP-08 still need separate approvals.
+Status: EP-01–EP-06 source implementation was approved on 2026-11-01.
+Local implementation and review are complete; draft publication is next.
+EP-07–EP-08 still need separate approvals.
 See [plan.md](plan.md) and the [approved spec](../../SPEC-check-enforcement-probe.md).
 No inherited checkbox is completion evidence for this module.
 
@@ -111,9 +112,9 @@ Pinned REUSE passed for both the source tree and a tree containing the marker.
 
 ## EP-06: Source validation, review and draft PR
 
-- [ ] Run full tests, manifest/public patch checks, compilation, Ruff, whitespace,
+- [x] Run full tests, manifest/public patch checks, compilation, Ruff, whitespace,
   pinned Actionlint and REUSE on the exact candidate tree.
-- [ ] Resolve independent scoped review findings; preserve red/green, mutation,
+- [x] Resolve independent scoped review findings; preserve red/green, mutation,
   source-diff and artifact evidence without weakening existing checks.
 - [ ] Prepare signed/DCO commits and a source-only draft PR, retaining old branches;
   do not merge or dispatch from source-plan approval.
@@ -121,6 +122,12 @@ Pinned REUSE passed for both the source tree and a tree containing the marker.
 Verification: exact-revision evidence and signed source history; PR scope excludes
 native/authority/production enforcement changes.
 Dependencies: EP-05. Source files: no additional runtime paths. Size: M closeout.
+
+Final review required direct runtime authorization and pre-write drift tests.
+Added a separate runtime test file without changing the worker or client.
+All 607 tests pass. Four new in-memory guard mutations are caught by assertions;
+the runtime source remains unchanged. Follow-up review closed the finding.
+Source publication and hosted validation remain pending.
 
 ## Checkpoint B: Source acceptance
 

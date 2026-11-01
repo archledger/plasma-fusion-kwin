@@ -2,10 +2,10 @@
 <!-- SPDX-License-Identifier: CC-BY-SA-4.0 -->
 # Spec: disposable check-enforcement probe
 
-Status: approved by the owner on 2026-11-01, with the maintainer-side protection
-read split explicitly approved during planning. Implementation planning is in
-`tasks/check-enforcement-probe/plan.md` and `todo.md`; those plans still need
-approval. Source merge, live protection changes and dispatch remain separate gates.
+Status: specification and EP-01–EP-06 source plan approved by the owner on
+2026-11-01, including maintainer-side protection reads. Source implementation
+and independent review are complete; draft publication is next. Source merge,
+live protection changes and dispatch remain separate gates.
 
 Module: `check-enforcement-probe` in `CAPABILITY-MAP.md`.
 
@@ -46,6 +46,7 @@ or native execution is needed.
 | `.github/workflows/check-enforcement-probe.yml` | Manual, bounded, main-only App worker and evidence upload |
 | `tools/probe_check_enforcement.py` | Strict stage/fixture validation, App operations and evidence records |
 | `tests/test_check_enforcement_probe.py` | Offline identity, fencing, history and failure tests |
+| `tests/test_check_enforcement_runtime.py` | Direct actor/permission and pre-write drift coverage added during source review |
 | `docs/CHECK-ENFORCEMENT-PROBE.md` | Maintainer procedure, live matrix and cleanup |
 
 Reuse `CheckReporter.begin`/`complete`, `CheckJournal`, strict JSON/identity
