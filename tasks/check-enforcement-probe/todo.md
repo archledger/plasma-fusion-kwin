@@ -66,6 +66,13 @@ Checkpoint A: 591 full-suite tests and five targeted mutations passed. A first
 mutation exposed a fixture-scope test confounded by a wrong parent; its fixture
 was corrected so the scope guard is independently exercised. No live calls ran.
 
+Checkpoint A review follow-up: fixed real API output metadata handling, optional
+temporary-directory portability, and pre-I/O B3 writer validation. Realistic
+response and zero-write regression tests pass; the old temporary-path assumption
+fails under the retained simulation and the corrected tests pass. Final total:
+594 tests and six caught mutations, including journal/check-ID binding. Scoped
+core review found no remaining required code issue; runtime wiring is still next.
+
 ## EP-04: Main-only manual workflow
 
 - [ ] Add only the proposed manual workflow, strict inputs and bounded worker

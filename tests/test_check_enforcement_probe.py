@@ -135,7 +135,9 @@ class ContractTests(unittest.TestCase):
 
 class StageTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(dir="/tmp/opencode")
+        self.temp = tempfile.TemporaryDirectory(
+            dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None
+        )
         self.addCleanup(self.temp.cleanup)
         self.server, self.writes, self.saved = {}, [], []
         self.fixtures = report_fixture("A1")["fixtures"]
@@ -151,21 +153,35 @@ class StageTests(unittest.TestCase):
         if method == "POST":
             check_id = 800 + len(self.server)
             self.server[check_id] = dict(
-                body,
+                copy.deepcopy(body),
                 id=check_id,
                 app={"id": probe.APP_ID},
                 conclusion=None,
                 completed_at=None,
             )
+            self.server[check_id]["output"].update(
+                text=None,
+                annotations_count=0,
+                annotations_url=f"https://api.github.com/check-runs/{check_id}/annotations",
+            )
         else:
             check_id = int(resource.split("/")[-1])
             if method == "PATCH":
-                self.server[check_id].update(body, completed_at="2026-11-01T00:00:00Z")
+                self.server[check_id].update(
+                    copy.deepcopy(body), completed_at="2026-11-01T00:00:00Z"
+                )
+                self.server[check_id]["output"].update(
+                    text=None,
+                    annotations_count=0,
+                    annotations_url=f"https://api.github.com/check-runs/{check_id}/annotations",
+                )
         if method != "GET":
             self.writes.append((method, copy.deepcopy(body)))
         return copy.deepcopy(self.server[check_id])
 
-    def run_stage(self, stage, previous=None, fence=lambda: None):
+    def run_stage(
+        self, stage, previous=None, fence=lambda: None, identity_overrides=None
+    ):
         index = probe.STAGES.index(stage)
         run_id, nonce = 500 + index, str(index + 1) * 32
         origin_id, origin_nonce = run_id, nonce
@@ -227,19 +243,20 @@ class StageTests(unittest.TestCase):
             patch("ci.native.checks._request", side_effect=self.send),
             patch.object(client.reader, "get", side_effect=inventory),
         ):
-            return probe.exercise(
-                client,
-                stage=stage,
-                experiment_id="e" * 32,
-                writer_run_id=run_id,
-                writer_nonce=nonce,
-                launcher="a" * 40,
-                authority="d" * 40,
-                fixtures=self.fixtures,
-                report_journal=report,
-                previous=previous,
-                save=lambda value: self.saved.append(copy.deepcopy(value)),
-            )
+            options = {
+                "stage": stage,
+                "experiment_id": "e" * 32,
+                "writer_run_id": run_id,
+                "writer_nonce": nonce,
+                "launcher": "a" * 40,
+                "authority": "d" * 40,
+                "fixtures": self.fixtures,
+                "report_journal": report,
+                "previous": previous,
+                "save": lambda value: self.saved.append(copy.deepcopy(value)),
+            }
+            options.update(identity_overrides or {})
+            return probe.exercise(client, **options)
 
     def test_fresh_stages_keep_history_and_use_validation_output(self):
         previous = None
@@ -250,6 +267,9 @@ class StageTests(unittest.TestCase):
         self.assertEqual([w[0] for w in self.writes], ["POST", "PATCH"] * 4 + ["POST"])
         self.assertTrue(
             all(w[1]["output"]["title"] == "Validation only" for w in self.writes)
+        )
+        self.assertTrue(
+            all(set(w[1]["output"]) == {"title", "summary"} for w in self.writes)
         )
         self.assertEqual(self.server[804]["status"], "in_progress")
 
@@ -283,6 +303,24 @@ class StageTests(unittest.TestCase):
         self.writes.clear()
         with self.assertRaises(ValueError):
             self.run_stage("B3", previous)
+        self.assertEqual(self.writes, [])
+
+    def test_b3_rejects_bad_writer_id_before_any_write(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous, identity_overrides={"writer_run_id": False})
+        self.assertEqual(self.writes, [])
+
+    def test_b3_rejects_bad_writer_nonce_before_any_write(self):
+        previous = None
+        for stage in probe.CREATION_STAGES:
+            previous = self.run_stage(stage, previous)
+        self.writes.clear()
+        with self.assertRaises(ValueError):
+            self.run_stage("B3", previous, identity_overrides={"writer_nonce": "bad"})
         self.assertEqual(self.writes, [])
 
     def test_fence_failure_stops_before_mutation(self):
@@ -515,6 +553,25 @@ class PredecessorTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.load(current, changed, values)
 
+    def test_journal_ack_must_name_the_recorded_check(self):
+        _, current, raw, values = self.fixture()
+        with zipfile.ZipFile(io.BytesIO(raw)) as source:
+            files = {name: source.read(name) for name in source.namelist()}
+        journal = json.loads(files["admit-journal.json"])
+        journal["writes"][0]["acknowledged_check_id"] = 999
+        files["admit-journal.json"] = json.dumps(journal).encode()
+        buffer = io.BytesIO()
+        with zipfile.ZipFile(buffer, "w") as target:
+            for name, value in files.items():
+                target.writestr(name, value)
+        changed = buffer.getvalue()
+        values["actions/runs/500/artifacts"]["artifacts"][0].update(
+            digest="sha256:" + hashlib.sha256(changed).hexdigest(),
+            size_in_bytes=len(changed),
+        )
+        with self.assertRaises(ValueError):
+            self.load(current, changed, values)
+
     def test_bad_source_attempt_artifact_or_timing_refuses_predecessor(self):
         for mutate in [
             lambda v: v["actions/runs/500"].update(head_sha="f" * 40),
@@ -537,7 +594,8 @@ class FixtureTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.temp = tempfile.TemporaryDirectory(
-            prefix="enforcement-keys-", dir="/tmp/opencode"
+            prefix="enforcement-keys-",
+            dir="/tmp/opencode" if Path("/tmp/opencode").is_dir() else None,
         )
         cls.root = Path(cls.temp.name)
         cls.keys, cls.public = cls.root / "keys", cls.root / "public"

@@ -401,6 +401,16 @@ def snapshot(check):
     }
 
 
+def validate_output(check):
+    output = check.get("output")
+    require(
+        type(output) is dict
+        and output.get("title") == "Validation only"
+        and output.get("summary") == SCOPE,
+        "probe output is not validation-only",
+    )
+
+
 def previous_records(
     previous,
     *,
@@ -479,6 +489,8 @@ def exercise(
     save,
 ):
     """One stage using real client guards; all external I/O is caller-scoped."""
+    identifier(writer_run_id)
+    digest(writer_nonce, 32)
     validate_fixtures(fixtures, launcher, authority)
     records = previous_records(
         previous,
@@ -522,10 +534,7 @@ def exercise(
             origin["check"]["id"] if origin else client.begin(head, CHECK_NAME, qid)
         )
         pending = client._send("GET", f"check-runs/{check_id}")
-        require(
-            pending["output"] == {"title": "Validation only", "summary": SCOPE},
-            "probe output is not validation-only",
-        )
+        validate_output(pending)
         record = origin or {
             "stage": stage,
             "run_id": writer_run_id,
@@ -543,10 +552,7 @@ def exercise(
                 check_id, head, CHECK_NAME, qid, success=outcome == "success"
             )
             completed = client._send("GET", f"check-runs/{check_id}")
-            require(
-                completed["output"] == {"title": "Validation only", "summary": SCOPE},
-                "probe output is not validation-only",
-            )
+            validate_output(completed)
             record["check"] = snapshot(completed)
         observe_history(client, records)
         observe_inventory(client, head, records)
