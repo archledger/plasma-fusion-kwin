@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 """Offline enforcement-probe contracts, never live GitHub evidence."""
 
+import contextlib
 import copy
 import hashlib
 import io
@@ -742,6 +743,185 @@ class FixtureTests(unittest.TestCase):
         bad = self.commit("B", self.base)
         with self.assertRaises(ValueError):
             self.verify(dict(self.fixtures, case_b=bad))
+
+
+class RuntimeTests(unittest.TestCase):
+    def environment(self, root):
+        return {
+            "GITHUB_ACTIONS": "true",
+            "GITHUB_REPOSITORY": probe.REPOSITORY,
+            "GITHUB_REF": "refs/heads/main",
+            "GITHUB_EVENT_NAME": "workflow_dispatch",
+            "GITHUB_RUN_ATTEMPT": "1",
+            "GITHUB_RUN_ID": "500",
+            "GITHUB_SHA": "a" * 40,
+            "GITHUB_WORKSPACE": str(Path(probe.__file__).resolve().parents[1]),
+            "RUNNER_TEMP": str(root),
+            "GH_TOKEN": "fixture",
+            "ENFORCEMENT_STAGE": "A1",
+            "ENFORCEMENT_EXPERIMENT_ID": "e" * 32,
+            "ENFORCEMENT_AUTHORITY_SHA": "d" * 40,
+            "ENFORCEMENT_PREDECESSOR_RUN": "",
+            "NATIVE_GATE_PRIVATE_KEY": "never-read",
+        }
+
+    def test_untrusted_runtime_rejected_before_api_or_token_use(self):
+        for field, value in [
+            ("GITHUB_REF", "refs/heads/test"),
+            ("GITHUB_REPOSITORY", "other/repo"),
+            ("GITHUB_EVENT_NAME", "push"),
+            ("GITHUB_RUN_ATTEMPT", "2"),
+            ("ENFORCEMENT_STAGE", "other"),
+        ]:
+            with self.subTest(field=field), tempfile.TemporaryDirectory() as root:
+                env = self.environment(root)
+                env[field] = value
+                with (
+                    patch.dict(os.environ, env, clear=True),
+                    patch.object(probe, "ProofAPI") as api,
+                    patch.object(probe.ValidationReporter, "from_key") as token,
+                ):
+                    with self.assertRaises(ValueError):
+                        probe.run_worker()
+                    api.assert_not_called()
+                    token.assert_not_called()
+
+    def test_changed_refs_stop_before_key_loading_or_token_mint(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            refs = {
+                "refs/heads/main": "f" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["a" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run"),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys") as keys,
+                patch.object(probe.ValidationReporter, "from_key") as token,
+            ):
+                with self.assertRaises(ValueError):
+                    probe.run_worker()
+                keys.assert_not_called()
+                token.assert_not_called()
+
+    def test_failure_output_never_echoes_exception_details(self):
+        output = io.StringIO()
+        with (
+            patch.object(
+                probe, "run_worker", side_effect=ValueError("secret sentinel")
+            ),
+            contextlib.redirect_stdout(output),
+        ):
+            self.assertEqual(probe.main(), 1)
+        self.assertNotIn("sentinel", output.getvalue())
+        self.assertFalse(json.loads(output.getvalue())["success"])
+
+    def test_predecessor_failure_occurs_before_token_mint(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            env.update(ENFORCEMENT_STAGE="A2", ENFORCEMENT_PREDECESSOR_RUN="499")
+            refs = {
+                "refs/heads/main": "a" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["a" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run", return_value={"id": 500}),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys", return_value=Path(root)),
+                patch.object(probe, "public_git"),
+                patch.object(probe, "verify_fixtures") as fixtures,
+                patch.object(
+                    probe, "load_predecessor", side_effect=ValueError("bad evidence")
+                ),
+                patch.object(probe.ValidationReporter, "from_key") as token,
+            ):
+                with self.assertRaises(ValueError):
+                    probe.run_worker()
+                fixtures.assert_called_once()
+                token.assert_not_called()
+
+    def test_workflow_is_manual_main_only_readonly_and_bounded(self):
+        root = Path(probe.__file__).resolve().parents[1]
+        text = (root / probe.WORKFLOW).read_text()
+        self.assertIn("workflow_dispatch:", text)
+        self.assertNotIn("  push:", text)
+        self.assertIn("github.ref == 'refs/heads/main'", text)
+        self.assertIn("timeout-minutes: 8", text)
+        self.assertIn("environment: native-gate-reporter", text)
+        self.assertNotIn(": write", text)
+        self.assertEqual(text.count("secrets.NATIVE_GATE_PRIVATE_KEY"), 1)
+        self.assertNotIn("tools.trusted_native", text)
+
+    def test_runtime_uses_b2_identity_for_b3_reporter_not_writer(self):
+        with tempfile.TemporaryDirectory() as root:
+            env = self.environment(root)
+            env.update(
+                GITHUB_RUN_ID="505",
+                ENFORCEMENT_STAGE="B3",
+                ENFORCEMENT_PREDECESSOR_RUN="504",
+            )
+            previous = report_fixture("B2")
+            refs = {
+                "refs/heads/main": "a" * 40,
+                "refs/heads/native-gate-coordination": "d" * 40,
+            }
+            refs.update(
+                dict(
+                    zip(
+                        probe.experiment_refs("e" * 32).values(),
+                        ["b" * 40, "b" * 40, "c" * 40],
+                    )
+                )
+            )
+            with (
+                patch.dict(os.environ, env, clear=True),
+                patch.object(probe, "ProofAPI"),
+                patch.object(probe, "verify_probe_run", return_value={"id": 505}),
+                patch.object(probe, "git", side_effect=["a" * 40, ""]),
+                patch.object(probe, "read_refs", return_value=refs),
+                patch.object(probe, "load_keys", return_value=Path(root)),
+                patch.object(probe, "public_git"),
+                patch.object(probe, "verify_fixtures"),
+                patch.object(probe, "load_predecessor", return_value=previous),
+                patch.object(
+                    probe.uuid, "uuid4", return_value=SimpleNamespace(hex="6" * 32)
+                ),
+                patch.object(probe.ValidationReporter, "from_key") as token,
+                patch.object(
+                    probe, "exercise", return_value=report_fixture("B3")
+                ) as execute,
+            ):
+                probe.run_worker()
+                self.assertEqual(token.call_args.args[2], 504)
+                self.assertEqual(execute.call_args.kwargs["writer_run_id"], 505)
+                journal = json.loads(
+                    (
+                        Path(root) / "check-enforcement-probe/report-journal.json"
+                    ).read_text()
+                )
+                self.assertEqual((journal["run_id"], journal["nonce"]), (504, "5" * 32))
 
 
 if __name__ == "__main__":

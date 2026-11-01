@@ -75,16 +75,20 @@ core review found no remaining required code issue; runtime wiring is still next
 
 ## EP-04: Main-only manual workflow
 
-- [ ] Add only the proposed manual workflow, strict inputs and bounded worker
+- [x] Add only the proposed manual workflow, strict inputs and bounded worker
   entrypoint; check repository/main/event/actor/attempt before token use.
-- [ ] Keep ordinary permissions read-only and the App key in the protected
+- [x] Keep ordinary permissions read-only and the App key in the protected
   writing step only; no native command, Git write credential or shared cache.
-- [ ] Upload only bounded reports/journals, including failure evidence, and enforce
+- [x] Upload only bounded reports/journals, including failure evidence, and enforce
   the eight-minute worker limit without automatic retries.
 
 Verification: workflow structure/entrypoint refusal tests and pinned Actionlint,
 focused suite, Ruff/whitespace. Dependencies: EP-03 and Checkpoint A.
 Files: workflow, probe module, test file. Size: M.
+
+EP-04: 600 full-suite tests and all 12 workflows through the cached, pinned
+Actionlint image passed. Runtime tests cover early refusal, pre-token predecessor
+failure and B3's origin/writer split. No workflow was dispatched.
 
 ## EP-05: Operator procedure and matrix accounting
 

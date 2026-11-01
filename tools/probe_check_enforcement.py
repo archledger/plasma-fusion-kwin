@@ -5,13 +5,23 @@
 import copy
 import hashlib
 import json
+import os
 import re
+import subprocess
+import uuid
+import zipfile
+from pathlib import Path
+from types import SimpleNamespace
+from urllib.request import build_opener
 
+from ci.native.check_journal import CheckJournal
 from ci.native.check_records import CheckIdentity, validate_check
 from ci.native.checks import CheckReporter
 from ci.native.merge_update import git, read_raw_object
 from ci.native.pagination import get_all
 from ci.native.proof_api import (
+    NoRedirect,
+    ProofAPI,
     bounded_integer,
     finite_float,
     object_pairs,
@@ -27,6 +37,8 @@ from ci.native.qualification import (
     timestamp,
 )
 from ci.native.signed_merge import verify_signed_commit
+from tools.probe_check_lifecycle import download_artifact
+from tools.probe_live_worker import FINGERPRINT, PUBLIC_KEY_SHA256, SIGNOFF
 
 REPOSITORY = "archledger/plasma-fusion-kwin"
 REPOSITORY_ID = 1439058578
@@ -564,3 +576,267 @@ def exercise(
         value["success"] = False
         save(copy.deepcopy(value))
         raise
+
+
+def public_git(directory, *args):
+    env = {
+        "PATH": os.defpath,
+        "HOME": str(directory),
+        "LANG": "C.UTF-8",
+        "GIT_CONFIG_NOSYSTEM": "1",
+        "GIT_CONFIG_GLOBAL": os.devnull,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_NO_REPLACE_OBJECTS": "1",
+    }
+    return (
+        subprocess.check_output(
+            ["git", "--no-replace-objects", *args],
+            cwd=directory,
+            env=env,
+            stderr=subprocess.PIPE,
+            timeout=60,
+        )
+        .decode()
+        .strip()
+    )
+
+
+def read_refs(work, experiment_id):
+    names = [
+        "refs/heads/main",
+        "refs/heads/native-gate-coordination",
+        *experiment_refs(experiment_id).values(),
+    ]
+    raw = public_git(
+        work, "ls-remote", "--refs", "https://github.com/" + REPOSITORY + ".git", *names
+    )
+    rows = [line.split() for line in raw.splitlines()]
+    require(
+        len(rows) == len(names) and all(len(row) == 2 for row in rows),
+        "incomplete enforcement refs",
+    )
+    values = {ref: digest(sha) for sha, ref in rows}
+    require(set(values) == set(names), "unexpected enforcement refs")
+    return values
+
+
+def load_keys(work):
+    with build_opener(NoRedirect()).open(
+        "https://github.com/archledger.gpg", timeout=30
+    ) as response:
+        raw = response.read(65537)
+    require(hashlib.sha256(raw).hexdigest() == PUBLIC_KEY_SHA256, "public key differs")
+    keyfile = work / "public.asc"
+    keyfile.write_bytes(raw)
+    keyring = work / "keys"
+    keyring.mkdir(mode=0o700)
+    subprocess.run(
+        [
+            "gpg",
+            "--no-options",
+            "--homedir",
+            str(keyring),
+            "--batch",
+            "--no-autostart",
+            "--no-auto-check-trustdb",
+            "--import",
+            str(keyfile),
+        ],
+        capture_output=True,
+        check=True,
+        timeout=30,
+    )
+    return keyring
+
+
+def run_worker():
+    require(
+        os.environ.get("GITHUB_ACTIONS") == "true"
+        and os.environ.get("GITHUB_REPOSITORY") == REPOSITORY
+        and os.environ.get("GITHUB_REF") == "refs/heads/main"
+        and os.environ.get("GITHUB_EVENT_NAME") == "workflow_dispatch"
+        and os.environ.get("GITHUB_RUN_ATTEMPT") == "1",
+        "not a trusted probe invocation",
+    )
+    stage = os.environ["ENFORCEMENT_STAGE"]
+    require(stage in STAGES, "invalid enforcement stage")
+    experiment = os.environ["ENFORCEMENT_EXPERIMENT_ID"]
+    names = experiment_refs(experiment)
+    authority = digest(os.environ["ENFORCEMENT_AUTHORITY_SHA"])
+    launcher = digest(os.environ["GITHUB_SHA"])
+    run_id = identifier(int(os.environ["GITHUB_RUN_ID"]))
+    previous_text = os.environ.get("ENFORCEMENT_PREDECESSOR_RUN", "")
+    require(
+        (stage == "A1" and previous_text == "")
+        or (stage != "A1" and re.fullmatch(r"[1-9][0-9]{0,18}", previous_text)),
+        "invalid predecessor run input",
+    )
+    previous_id = None if not previous_text else identifier(int(previous_text))
+    root = Path(os.environ["GITHUB_WORKSPACE"]).resolve(strict=True)
+    require(
+        root == Path(__file__).resolve().parents[1]
+        and git(root, "rev-parse", "HEAD") == launcher
+        and git(root, "status", "--porcelain") == "",
+        "source checkout differs",
+    )
+    work = (
+        Path(os.environ["RUNNER_TEMP"]).resolve(strict=True) / "check-enforcement-probe"
+    )
+    work.mkdir(mode=0o700)
+    api = ProofAPI(REPOSITORY, token=os.environ["GH_TOKEN"], max_calls=64)
+    current = verify_probe_run(api, run_id, launcher, completed=False)
+    refs = read_refs(work, experiment)
+    fixtures = {
+        "base": launcher,
+        "case_a": refs[names["case_a"]],
+        "case_b": refs[names["case_b"]],
+    }
+    validate_fixtures(fixtures, launcher, authority)
+    expected_target = fixtures["base"] if stage.startswith("A") else fixtures["case_a"]
+    expected_refs = {
+        "refs/heads/main": launcher,
+        "refs/heads/native-gate-coordination": authority,
+        names["target"]: expected_target,
+        names["case_a"]: fixtures["case_a"],
+        names["case_b"]: fixtures["case_b"],
+    }
+    require(refs == expected_refs, "enforcement refs changed")
+    keyring = load_keys(work)
+    objects = work / "objects.git"
+    public_git(work, "init", "--bare", "-q", str(objects))
+    public_git(
+        objects,
+        "fetch",
+        "--no-tags",
+        "--depth=3",
+        "https://github.com/" + REPOSITORY + ".git",
+        fixtures["case_b"],
+    )
+    verify_fixtures(
+        objects,
+        fixtures,
+        experiment,
+        launcher=launcher,
+        authority=authority,
+        keyring=keyring,
+        fingerprint=FINGERPRINT,
+        signoff=SIGNOFF,
+    )
+    previous = load_predecessor(
+        api,
+        stage,
+        previous_id,
+        current,
+        launcher=launcher,
+        authority=authority,
+        fixtures=fixtures,
+        experiment_id=experiment,
+        download=download_artifact,
+    )
+    writer_nonce = uuid.uuid4().hex
+    # Finish all unprivileged checks before minting a scoped App token.
+    records = previous_records(
+        previous,
+        stage=stage,
+        experiment_id=experiment,
+        launcher=launcher,
+        authority=authority,
+        fixtures=fixtures,
+        writer_run_id=run_id,
+        writer_nonce=writer_nonce,
+    )
+    origin = records[-1] if stage == "B3" else None
+    origin_id = origin["run_id"] if origin else run_id
+    origin_nonce = origin["nonce"] if origin else writer_nonce
+    qid = (
+        origin["qualification_id"]
+        if origin
+        else stage_qid(
+            experiment, stage, run_id, stage_head(stage, fixtures), writer_nonce
+        )
+    )
+    journals = {}
+    for phase in ([] if stage == "B3" else ["admit"]) + (
+        [] if stage == "B2" else ["report"]
+    ):
+        journals[phase] = CheckJournal(
+            work / (phase + "-journal.json"),
+            qualification_id=qid,
+            run_id=origin_id,
+            nonce=origin_nonce,
+            phase=phase,
+        )
+
+    def fence():
+        verify_probe_run(api, run_id, launcher, completed=False)
+        require(
+            read_refs(work, experiment) == expected_refs, "enforcement fence changed"
+        )
+
+    fence()
+    policy = SimpleNamespace(
+        repository=REPOSITORY,
+        repository_id=REPOSITORY_ID,
+        app_id=APP_ID,
+        check_name=CHECK_NAME,
+    )
+    client = ValidationReporter.from_key(
+        policy,
+        os.environ["NATIVE_GATE_PRIVATE_KEY"],
+        origin_id,
+        fence,
+        journal=journals["report" if stage == "B3" else "admit"],
+    )
+
+    def save(value):
+        (work / "report.json").write_bytes(canonical_json(value) + b"\n")
+
+    return exercise(
+        client,
+        stage=stage,
+        experiment_id=experiment,
+        writer_run_id=run_id,
+        writer_nonce=writer_nonce,
+        launcher=launcher,
+        authority=authority,
+        fixtures=fixtures,
+        report_journal=journals.get("report"),
+        previous=previous,
+        save=save,
+    )
+
+
+def main():
+    try:
+        value = run_worker()
+        print(
+            json.dumps(
+                {
+                    "success": True,
+                    "scope": SCOPE,
+                    "stage": value["stage"],
+                    "writer_run_id": value["writer_run_id"],
+                }
+            )
+        )
+        return 0
+    except (
+        OSError,
+        ValueError,
+        KeyError,
+        TypeError,
+        AttributeError,
+        RuntimeError,
+        subprocess.SubprocessError,
+        zipfile.BadZipFile,
+    ) as error:
+        print(
+            json.dumps(
+                {"success": False, "scope": SCOPE, "error_type": type(error).__name__}
+            )
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
